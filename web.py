@@ -82,29 +82,16 @@ def create_web_app(lifespan=None) -> FastAPI:
         if user.is_super_admin:
             return _back(q, "Super admins (set in SUPER_ADMIN_IDS) can't be changed here.")
 
-        tg_app = getattr(request.app.state, "telegram", None)
-        note = None
-        if action == "make_admin":
-            db.set_role(telegram_id, "admin")
-            note = "🛡 You are now an <b>admin</b>. Use /read to read today's reports."
-        elif action == "remove_admin":
-            db.set_role(telegram_id, "user")
-            note = "You are no longer an admin."
-        elif action == "suspend":
-            db.set_suspended(telegram_id, True)
-            note = "⛔ Your account has been suspended."
-        elif action == "unsuspend":
-            db.set_suspended(telegram_id, False)
-            note = "✅ Your account is active again. You can send reports."
-        else:
+        from bot import ACTIONS, apply_user_change, change_user
+
+        if action not in ACTIONS:
             raise HTTPException(400, "Unknown action")
-
+        tg_app = getattr(request.app.state, "telegram", None)
         if tg_app is not None:
-            from bot import notify, set_commands_for
-
-            updated = db.get_user(telegram_id)
-            await set_commands_for(tg_app, updated)
-            await notify(tg_app, telegram_id, note)
+            # Also updates the user's command menu and keyboard, and tells them.
+            await apply_user_change(tg_app, telegram_id, action)
+        else:
+            change_user(telegram_id, action)
 
         return _back(q, f"{user.display_name}: {action.replace('_', ' ')} done.")
 

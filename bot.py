@@ -1,7 +1,8 @@
-"""Telegram bot: users send reports (text / images), admins read today's reports."""
+"""Telegram bot: users send reports (text / images), admins read today's reports and manage users."""
 import asyncio
 import html
 import logging
+from datetime import date, datetime
 
 from telegram import (
     BotCommand,
@@ -9,6 +10,8 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     InputMediaPhoto,
+    KeyboardButton,
+    ReplyKeyboardMarkup,
     Update,
 )
 from telegram.constants import ParseMode
@@ -23,26 +26,55 @@ from telegram.ext import (
 )
 
 import config
-from db import Report, User, db, to_local
+from db import Report, User, db, local_today, to_local
 
 log = logging.getLogger(__name__)
 
 CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4096
+MAX_REPORTS_SHOWN = 50  # per day in the report browser
+
+# Inline button callback data
 READ_NEXT = "read_next"
 MENU_READ = "menu:read"
 MENU_STATUS = "menu:status"
-USERS_PAGE = "users:"  # + page number
-USERS_PER_PAGE = 20
+USERS_PAGE = "users:"   # users:<page>
+USER_CARD = "user:"     # user:<telegram_id>:<page>
+USER_ACTION = "act:"    # act:<telegram_id>:<action>:<page>
+REPORTS_DAY = "rep:"    # rep:<telegram_id>:<YYYYMMDD>
+USERS_PER_PAGE = 10
+
+# Reply keyboard (the buttons under the text box)
+BTN_SEND = "📝 Send report"
+BTN_MINE = "📂 My reports"
+BTN_READ = "📖 Read reports"
+BTN_STATUS = "📊 Status"
+BTN_USERS = "👥 Manage users"
 
 USER_COMMANDS = [
     BotCommand("start", "Start / help"),
+    BotCommand("mine", "My reports"),
 ]
 ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("read", "Read today's reports (next user)"),
     BotCommand("status", "Today's report summary"),
-    BotCommand("users", "List users"),
+    BotCommand("users", "List and manage users"),
 ]
+
+# action -> (label, note sent to the user)
+ACTIONS = {
+    "make_admin": ("🛡 Make admin", "🛡 You are now an <b>admin</b>. Use the buttons below to read reports."),
+    "remove_admin": ("Remove admin", "You are no longer an admin."),
+    "suspend": ("⛔ Suspend", "⛔ Your account has been suspended."),
+    "unsuspend": ("✅ Unsuspend", "✅ Your account is active again. You can send reports."),
+}
+
+
+def main_keyboard(user: User) -> ReplyKeyboardMarkup:
+    rows = [[KeyboardButton(BTN_SEND), KeyboardButton(BTN_MINE)]]
+    if user.is_admin and not user.is_suspended:
+        rows += [[KeyboardButton(BTN_READ), KeyboardButton(BTN_STATUS)], [KeyboardButton(BTN_USERS)]]
+    return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True)
 
 
 def admin_menu() -> InlineKeyboardMarkup:
@@ -79,22 +111,32 @@ def _caption(user: User, report: Report, limit: int) -> str:
         raw = _truncate(raw, max(1, len(raw) - (len(text) - limit) - 1))
 
 
+def _fmt_day(day: date) -> str:
+    return "Today" if day == local_today() else day.strftime("%a %d %b %Y")
+
+
+async def _answer_tap(update: Update, clear_buttons: bool, text: str | None = None) -> None:
+    query = update.callback_query
+    if not query:
+        return
+    await query.answer(text)
+    if clear_buttons:
+        # Remove the buttons from the tapped message so old menus can't be pressed twice.
+        try:
+            await query.edit_message_reply_markup(None)
+        except TelegramError:
+            pass
+
+
 async def _admin_from_update(update: Update, context: ContextTypes.DEFAULT_TYPE,
                              clear_buttons: bool = True) -> User | None:
-    """Register the caller; answer the button tap if any. Returns the admin, or None (after
-    telling the caller) if they're not an active admin."""
-    query = update.callback_query
-    if query:
-        await query.answer()
-        if clear_buttons:
-            # Remove the buttons from the tapped message so old menus can't be pressed twice.
-            try:
-                await query.edit_message_reply_markup(None)
-            except TelegramError:
-                pass
+    """Register the caller and answer the button tap, if any. Returns the admin, or None
+    (after telling the caller) if they're not an active admin."""
+    await _answer_tap(update, clear_buttons)
     user = _register(update)
     if not user.is_admin or user.is_suspended:
-        await context.bot.send_message(update.effective_chat.id, "This command is only for admins.")
+        await context.bot.send_message(update.effective_chat.id, "This is only for admins.",
+                                       reply_markup=main_keyboard(user))
         return None
     return user
 
@@ -110,38 +152,139 @@ async def set_commands_for(app: Application, user: User) -> None:
         log.warning("Could not set commands for %s: %s", user.telegram_id, e)
 
 
-async def notify(app: Application, telegram_id: int, text: str) -> None:
+async def notify(app: Application, telegram_id: int, text: str, reply_markup=None) -> None:
     try:
-        await app.bot.send_message(telegram_id, text, parse_mode=ParseMode.HTML)
+        await app.bot.send_message(telegram_id, text, parse_mode=ParseMode.HTML, reply_markup=reply_markup)
     except TelegramError as e:
         log.warning("Could not notify %s: %s", telegram_id, e)
 
 
-# ---------- commands ----------
+async def apply_user_change(app: Application, telegram_id: int, action: str) -> User:
+    """Change a user's role or status, then update their command menu and keyboard and tell them.
+    Used by both the bot and the web admin page."""
+    user = change_user(telegram_id, action)
+    await set_commands_for(app, user)
+    await notify(app, telegram_id, ACTIONS[action][1], reply_markup=main_keyboard(user))
+    return user
+
+
+def change_user(telegram_id: int, action: str) -> User:
+    """Database part of apply_user_change."""
+    if action == "make_admin":
+        db.set_role(telegram_id, "admin")
+    elif action == "remove_admin":
+        db.set_role(telegram_id, "user")
+    elif action == "suspend":
+        db.set_suspended(telegram_id, True)
+    elif action == "unsuspend":
+        db.set_suspended(telegram_id, False)
+    else:
+        raise ValueError(f"Unknown action {action!r}")
+    return db.get_user(telegram_id)
+
+
+# ---------- start / send report ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = _register(update)
     await set_commands_for(context.application, user)
     if user.is_suspended:
-        await update.message.reply_text("⛔ Your account is suspended. Contact an admin.")
+        await update.message.reply_text("⛔ Your account is suspended. Contact an admin.",
+                                        reply_markup=main_keyboard(user))
         return
 
     text = (
         f"Hi {html.escape(update.effective_user.first_name or '')} 👋\n\n"
-        "📝 To submit a report, just send me a <b>text message</b> or an <b>image</b> "
-        "(add a caption to describe it). You can send as many as you need."
+        f"{BTN_SEND} – how to send a report (just send me a <b>text message</b> or an <b>image</b>)\n"
+        f"{BTN_MINE} – see the reports you've sent"
     )
     if user.is_admin:
         text += (
             "\n\n🛡 <b>You are an admin.</b>\n"
-            "📖 <b>Read</b> – read today's reports, one user at a time (/read)\n"
-            "📊 <b>Status</b> – summary of today's reports (/status)\n"
-            "👥 <b>Users</b> – list all users (/users)"
+            f"{BTN_READ} – read today's reports, one user at a time\n"
+            f"{BTN_STATUS} – summary of today's reports\n"
+            f"{BTN_USERS} – list users, make admins, suspend"
         )
-        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=admin_menu())
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
+
+
+async def send_report_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = _register(update)
+    if user.is_suspended:
+        await update.message.reply_text("⛔ Your account is suspended. You can't send reports.")
         return
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await update.message.reply_text(
+        "📝 Send your report now: type a <b>text message</b>, or send a <b>photo</b> / album / image file "
+        "(add a caption to describe it). Every message you send is saved as a report.",
+        parse_mode=ParseMode.HTML,
+        reply_markup=main_keyboard(user),
+    )
 
 
+# ---------- report browser (own reports, or any user's for admins) ----------
+async def my_reports(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    user = _register(update)
+    await _show_reports(update, context, user, user.telegram_id, local_today())
+
+
+async def reports_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    _, target, day = update.callback_query.data.split(":")
+    viewer = _register(update)
+    await _answer_tap(update, clear_buttons=True)
+    await _show_reports(update, context, viewer, int(target), datetime.strptime(day, "%Y%m%d").date())
+
+
+async def _show_reports(update: Update, context: ContextTypes.DEFAULT_TYPE, viewer: User,
+                        target_id: int, day: date) -> None:
+    chat_id = update.effective_chat.id
+    bot = context.bot
+    own = target_id == viewer.telegram_id
+    if not own and (not viewer.is_admin or viewer.is_suspended):
+        await bot.send_message(chat_id, "This is only for admins.")
+        return
+    target = db.get_user(target_id)
+    if not target:
+        await bot.send_message(chat_id, "User not found.")
+        return
+
+    reports = db.user_reports_on(target_id, day)
+    days = db.user_report_days(target_id)
+    who = "Your reports" if own else f"Reports from {html.escape(target.display_name)}"
+    title = f"📂 <b>{who}</b> · {_fmt_day(day)}"
+    if not reports:
+        empty = "You haven't sent any reports" if own else "No reports"
+        await bot.send_message(chat_id, f"{title}\n{empty} on this day.", parse_mode=ParseMode.HTML)
+    else:
+        await bot.send_message(chat_id, f"{title} · {len(reports)} report(s)", parse_mode=ParseMode.HTML)
+        for group in _group_albums(reports[:MAX_REPORTS_SHOWN]):
+            try:
+                await _send_group(bot, chat_id, target, group)
+            except TelegramError as e:
+                log.warning("Could not show reports %s: %s", [r.id for r in group], e)
+                await bot.send_message(chat_id, f"⚠️ Could not show a report: {html.escape(str(e))}")
+        if len(reports) > MAX_REPORTS_SHOWN:
+            await bot.send_message(chat_id, f"…showing the first {MAX_REPORTS_SHOWN}.")
+
+    # Jump straight to the nearest day that has reports.
+    earlier = [d for d in days if d < day]
+    later = [d for d in days if d > day]
+    nav = []
+    if earlier:
+        nav.append(InlineKeyboardButton(f"◀ {earlier[-1]:%d %b}",
+                                        callback_data=f"{REPORTS_DAY}{target_id}:{earlier[-1]:%Y%m%d}"))
+    if later:
+        nav.append(InlineKeyboardButton(f"{later[0]:%d %b} ▶",
+                                        callback_data=f"{REPORTS_DAY}{target_id}:{later[0]:%Y%m%d}"))
+    rows = [nav] if nav else []
+    if day != local_today() and (not later or later[0] != local_today()):
+        rows.append([InlineKeyboardButton("📅 Today",
+                                          callback_data=f"{REPORTS_DAY}{target_id}:{local_today():%Y%m%d}")])
+    if not own:
+        rows.append([InlineKeyboardButton("◀ Back to user", callback_data=f"{USER_CARD}{target_id}:0")])
+    footer = f"Days with reports: {len(days)}." if days else "No reports yet."
+    await bot.send_message(chat_id, footer, reply_markup=InlineKeyboardMarkup(rows) if rows else None)
+
+
+# ---------- admin: status ----------
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await _admin_from_update(update, context)
     if not user:
@@ -162,8 +305,29 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     )
 
 
+# ---------- admin: users ----------
+def _badge(u: User) -> str:
+    badge = "⭐" if u.is_super_admin else "🛡" if u.is_admin else "👤"
+    return badge + ("⛔" if u.is_suspended else "")
+
+
+async def _show(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str,
+                keyboard: InlineKeyboardMarkup) -> None:
+    """Edit the tapped message in place, or send a new one."""
+    query = update.callback_query
+    if query:
+        try:
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            return
+        except TelegramError:
+            # e.g. the tapped message was a photo, or nothing changed: send a new one.
+            pass
+    await context.bot.send_message(update.effective_chat.id, text, parse_mode=ParseMode.HTML,
+                                   reply_markup=keyboard)
+
+
 async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List all users, USERS_PER_PAGE at a time. Paging edits the same message."""
+    """List all users, USERS_PER_PAGE at a time; tap one to manage them."""
     query = update.callback_query
     admin = await _admin_from_update(update, context, clear_buttons=False)
     if not admin:
@@ -182,36 +346,104 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         lines[0] += f" · page {page + 1}/{pages}"
     for r in chunk:
         u: User = r["user"]
-        badge = "⭐" if u.is_super_admin else "🛡" if u.is_admin else "⛔" if u.is_suspended else "👤"
-        if u.is_admin and u.is_suspended:
-            badge += "⛔"
         lines.append(
-            f"{badge} {html.escape(u.display_name)} · <code>{u.telegram_id}</code>\n"
+            f"{_badge(u)} {html.escape(u.display_name)} · <code>{u.telegram_id}</code>\n"
             f"      today {r['today_reports']} · total {r['total_reports']}"
         )
     if not chunk:
         lines.append("No users yet.")
-    lines.append("\n⭐ super admin · 🛡 admin · 👤 user · ⛔ suspended")
-    text = "\n".join(lines)
+    lines.append("\n⭐ super admin · 🛡 admin · 👤 user · ⛔ suspended\nTap a user to manage them.")
 
+    buttons = [
+        InlineKeyboardButton(f"{_badge(r['user'])} {_truncate(r['user'].full_name or str(r['user'].telegram_id), 24)}",
+                             callback_data=f"{USER_CARD}{r['user'].telegram_id}:{page}")
+        for r in chunk
+    ]
+    kb = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
     nav = []
     if page > 0:
         nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"{USERS_PAGE}{page - 1}"))
     if page < pages - 1:
         nav.append(InlineKeyboardButton("Next ▶", callback_data=f"{USERS_PAGE}{page + 1}"))
-    keyboard = InlineKeyboardMarkup(([nav] if nav else []) + list(admin_menu().inline_keyboard))
-
-    if query:
-        try:
-            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
-            return
-        except TelegramError:
-            # e.g. the tapped message was a photo, or the text didn't change: send a new one.
-            pass
-    await context.bot.send_message(update.effective_chat.id, text, parse_mode=ParseMode.HTML,
-                                   reply_markup=keyboard)
+    if nav:
+        kb.append(nav)
+    await _show(update, context, "\n".join(lines), InlineKeyboardMarkup(kb))
 
 
+def _allowed_actions(admin: User, target: User) -> list[str]:
+    """Super admins can change roles and suspend anyone (except super admins and themselves).
+    Other admins can only suspend / unsuspend regular users."""
+    if target.is_super_admin or target.telegram_id == admin.telegram_id:
+        return []
+    actions = []
+    if admin.is_super_admin:
+        actions.append("remove_admin" if target.role == "admin" else "make_admin")
+    if admin.is_super_admin or not target.is_admin:
+        actions.append("unsuspend" if target.is_suspended else "suspend")
+    return actions
+
+
+async def _render_user_card(update: Update, context: ContextTypes.DEFAULT_TYPE, admin: User,
+                            target: User, page: int) -> None:
+    today, total = db.user_report_counts(target.telegram_id)
+    role = "Super admin" if target.is_super_admin else "Admin" if target.is_admin else "User"
+    text = (
+        f"{_badge(target)} <b>{html.escape(target.display_name)}</b>\n"
+        f"ID: <code>{target.telegram_id}</code>\n"
+        f"Role: {role}\n"
+        f"Status: {'⛔ Suspended' if target.is_suspended else 'Active'}\n"
+        f"Reports: today {today} · total {total}\n"
+        f"Joined: {to_local(target.created_at):%Y-%m-%d} · last seen {to_local(target.last_seen_at):%Y-%m-%d %H:%M}"
+    )
+    actions = _allowed_actions(admin, target)
+    if target.is_super_admin:
+        text += "\n\nSuper admins are set in SUPER_ADMIN_IDS and can't be changed here."
+    elif target.telegram_id == admin.telegram_id:
+        text += "\n\nThis is you."
+    elif not actions:
+        text += "\n\nOnly super admins can change other admins."
+
+    kb = [[InlineKeyboardButton(ACTIONS[a][0], callback_data=f"{USER_ACTION}{target.telegram_id}:{a}:{page}")
+           for a in actions]] if actions else []
+    kb.append([InlineKeyboardButton("📂 Reports",
+                                    callback_data=f"{REPORTS_DAY}{target.telegram_id}:{local_today():%Y%m%d}")])
+    kb.append([InlineKeyboardButton("◀ Back to users", callback_data=f"{USERS_PAGE}{page}")])
+    await _show(update, context, text, InlineKeyboardMarkup(kb))
+
+
+async def user_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    admin = await _admin_from_update(update, context, clear_buttons=False)
+    if not admin:
+        return
+    _, target_id, page = update.callback_query.data.split(":")
+    target = db.get_user(int(target_id))
+    if not target:
+        await context.bot.send_message(update.effective_chat.id, "User not found.")
+        return
+    await _render_user_card(update, context, admin, target, int(page))
+
+
+async def user_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    query = update.callback_query
+    _, target_id, action, page = query.data.split(":")
+    admin = _register(update)
+    target = db.get_user(int(target_id))
+    if not admin.is_admin or admin.is_suspended:
+        await query.answer("Only for admins.", show_alert=True)
+        return
+    if not target or action not in _allowed_actions(admin, target):
+        # The card was out of date (someone else changed this user); show the current one.
+        await query.answer("Not allowed or already changed.", show_alert=True)
+        if target:
+            await _render_user_card(update, context, admin, target, int(page))
+        return
+    target = await apply_user_change(context.application, target.telegram_id, action)
+    log.info("Admin %s: %s -> %s", admin.telegram_id, action, target.telegram_id)
+    await query.answer(f"{target.full_name or target.telegram_id}: {action.replace('_', ' ')} done.")
+    await _render_user_card(update, context, admin, target, int(page))
+
+
+# ---------- admin: read ----------
 async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send the next user's unread reports for today, then mark them read."""
     admin = await _admin_from_update(update, context)
@@ -328,7 +560,8 @@ async def receive_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         acked.add(msg.media_group_id)
         if len(acked) > 1000:
             acked.clear()
-    await msg.reply_text("✅ Report received. Thank you!")
+    # The keyboard rides along so users who started the bot before it existed get it too.
+    await msg.reply_text("✅ Report received. Thank you!", reply_markup=main_keyboard(user))
 
 
 # ---------- live delivery to admins ----------
@@ -393,12 +626,22 @@ def build_application() -> Application:
 
     app.add_handler(CommandHandler("start", start, filters=private))
     app.add_handler(CommandHandler("help", start, filters=private))
+    app.add_handler(CommandHandler("mine", my_reports, filters=private))
     app.add_handler(CommandHandler("read", read, filters=private))
     app.add_handler(CommandHandler("status", status, filters=private))
     app.add_handler(CommandHandler("users", users, filters=private))
+
+    # Reply keyboard buttons. Registered before receive_report so their text isn't saved as a report.
+    for text, handler in [(BTN_SEND, send_report_prompt), (BTN_MINE, my_reports), (BTN_READ, read),
+                          (BTN_STATUS, status), (BTN_USERS, users)]:
+        app.add_handler(MessageHandler(private & filters.Text([text]), handler))
+
     app.add_handler(CallbackQueryHandler(read, pattern=f"^({READ_NEXT}|{MENU_READ})$"))
     app.add_handler(CallbackQueryHandler(status, pattern=f"^{MENU_STATUS}$"))
-    app.add_handler(CallbackQueryHandler(users, pattern=f"^{USERS_PAGE}\\d+$"))
+    app.add_handler(CallbackQueryHandler(users, pattern=rf"^{USERS_PAGE}\d+$"))
+    app.add_handler(CallbackQueryHandler(user_card, pattern=rf"^{USER_CARD}\d+:\d+$"))
+    app.add_handler(CallbackQueryHandler(user_action, pattern=rf"^{USER_ACTION}\d+:[a-z_]+:\d+$"))
+    app.add_handler(CallbackQueryHandler(reports_day, pattern=rf"^{REPORTS_DAY}\d+:\d{{8}}$"))
     app.add_handler(
         MessageHandler(
             private & (filters.PHOTO | filters.Document.IMAGE | (filters.TEXT & ~filters.COMMAND)),

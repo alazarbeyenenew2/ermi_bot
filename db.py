@@ -2,7 +2,7 @@
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 import config
 
@@ -78,10 +78,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def local_today() -> date:
+    return datetime.now(config.TIMEZONE).date()
+
+
 def today_range_utc() -> tuple[str, str]:
     """Start/end of 'today' in the configured timezone, as UTC ISO strings."""
-    local_today = datetime.now(config.TIMEZONE).date()
-    start = datetime.combine(local_today, time.min, tzinfo=config.TIMEZONE)
+    return day_range_utc(local_today())
+
+
+def day_range_utc(day: date) -> tuple[str, str]:
+    """Start/end of a local calendar day, as UTC ISO strings."""
+    start = datetime.combine(day, time.min, tzinfo=config.TIMEZONE)
     end = start + timedelta(days=1)
     return (
         start.astimezone(timezone.utc).isoformat(),
@@ -239,6 +247,33 @@ class Database:
             [(admin_id, rid, now) for rid in report_ids],
         )
         self.conn.commit()
+
+    def user_report_counts(self, user_id: int) -> tuple[int, int]:
+        """(today, total) number of reports sent by this user."""
+        start, end = today_range_utc()
+        row = self.conn.execute(
+            """SELECT COUNT(*) AS total,
+                      SUM(CASE WHEN created_at >= ? AND created_at < ? THEN 1 ELSE 0 END) AS today
+               FROM reports WHERE user_id = ?""",
+            (start, end, user_id),
+        ).fetchone()
+        return row["today"] or 0, row["total"]
+
+    def user_report_days(self, user_id: int) -> list[date]:
+        """Local calendar days on which this user sent reports, oldest first."""
+        rows = self.conn.execute(
+            "SELECT created_at FROM reports WHERE user_id = ?", (user_id,)
+        ).fetchall()
+        return sorted({to_local(r["created_at"]).date() for r in rows})
+
+    def user_reports_on(self, user_id: int, day: date) -> list[Report]:
+        start, end = day_range_utc(day)
+        rows = self.conn.execute(
+            """SELECT * FROM reports WHERE user_id = ? AND created_at >= ? AND created_at < ?
+               ORDER BY created_at, id""",
+            (user_id, start, end),
+        ).fetchall()
+        return [Report(**dict(r)) for r in rows]
 
     def today_stats(self, admin_id: int) -> dict:
         start, end = today_range_utc()

@@ -4,16 +4,20 @@ A Telegram bot where users send reports (text and images), and admins read each 
 
 ## Features
 
+Everyone gets a keyboard under the text box. Users see **📝 Send report** and **📂 My reports**; admins also get **📖 Read reports**, **📊 Status** and **👥 Manage users**. The keyboard appears after `/start` (or with the reply to the next report sent).
+
 **Users** (everyone is a user by default):
-- Send any **text** or **image** (a photo, an album, or an image file; captions are kept) and it's saved as a report.
+- Send any **text** or **image** (a photo, an album, or an image file; captions are kept) and it's saved as a report. **📝 Send report** explains this.
+- **📂 My reports** (or `/mine`): your reports for today, with ◀ ▶ buttons that jump to the previous or next day you reported.
 - Suspended users get a message saying so, and their reports are not saved.
 
 **Admins** (in Telegram):
 - **Live reports**: every new report is sent to all active admins the moment it arrives, marked "🆕 New report". Albums arrive together as one album. A report delivered this way counts as read, so `/read` only shows reports you missed, for example ones that arrived while you had blocked the bot. Set `LIVE_MARKS_READ=false` to have `/read` show everything anyway, or `LIVE_REPORTS=false` to turn live delivery off.
 - `/read`: shows all of **today's** unread reports from the **next user**, then marks them as read. Tap **Next user ▶** to keep going until you get *"You have read all of today's reports."* Each admin has their own read state.
 - `/status`: today's totals and which users still have unread reports.
-- `/users`: every user with their role, status and report counts (today / total), 20 per page with ◀ ▶ buttons.
-- **Inline menu**: `/start` and every admin reply end with **📖 Read**, **📊 Status** and **👥 Users** buttons, so admins can work without typing commands. (Admins who started the bot earlier send `/start` once to get `/users` in their command menu.)
+- **👥 Manage users** (or `/users`): every user with their role, status and report counts (today / total), 10 per page. Tap a user to open their card with **Make admin / Remove admin**, **Suspend / Unsuspend**, and **📂 Reports** (browse their reports by day, without marking them read). The user gets a Telegram message and their keyboard updates.
+  - **Super admins** (`SUPER_ADMIN_IDS`) can do everything. **Other admins** can only suspend or unsuspend regular users. Nobody can change a super admin or themselves.
+- **Inline menu**: Status, Read and the users list also end with **📖 Read**, **📊 Status** and **👥 Users** buttons.
 
 **Web admin page** (`http://<server>:8000`):
 - Lists all users with their role, status and report counts. You can search them.
