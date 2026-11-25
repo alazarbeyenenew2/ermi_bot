@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block content %}
+<style>
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 16px; }
+  .stat b { display: block; font-size: 24px; }
+  .toolbar { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .toolbar input { flex: 1; min-width: 200px; }
+  .flash { padding: 10px 14px; border-radius: 8px; margin-bottom: 12px;
+           background: color-mix(in srgb, var(--primary) 12%, transparent); }
+  .table-wrap { overflow-x: auto; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); font-weight: 600; }
+  .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; font-weight: 600; }
+  .b-admin { background: color-mix(in srgb, var(--primary) 15%, transparent); color: var(--primary); }
+  .b-user { background: color-mix(in srgb, var(--muted) 15%, transparent); color: var(--muted); }
+  .b-super { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .b-active { background: color-mix(in srgb, var(--ok) 15%, transparent); color: var(--ok); }
+  .b-susp { background: color-mix(in srgb, var(--danger) 15%, transparent); color: var(--danger); }
+  .actions { display: flex; gap: 6px; flex-wrap: wrap; }
+  .actions form { margin: 0; }
+</style>
+
+<header>
+  <h1>👥 Users</h1>
+  <form method="post" action="/logout"><button type="submit">Log out</button></form>
+</header>
+
+<div class="stats">
+  <div class="card stat"><span class="muted">Users</span><b>{{ stats.users }}</b></div>
+  <div class="card stat"><span class="muted">Admins</span><b>{{ stats.admins }}</b></div>
+  <div class="card stat"><span class="muted">Suspended</span><b>{{ stats.suspended }}</b></div>
+  <div class="card stat"><span class="muted">Reports today</span><b>{{ stats.today }}</b></div>
+</div>
+
+{% if msg %}<div class="flash">{{ msg }}</div>{% endif %}
+
+<div class="card">
+  <form class="toolbar" method="get" action="/">
+    <input name="q" value="{{ q }}" placeholder="Search by name, @username or Telegram ID">
+    <button type="submit">Search</button>
+    {% if q %}<a class="btn" href="/" style="text-decoration:none">Clear</a>{% endif %}
+  </form>
+
+  <div class="table-wrap">
+  <table>
+    <thead>
+      <tr><th>User</th><th>Telegram ID</th><th>Role</th><th>Status</th><th>Reports (today / total)</th><th>Last seen</th><th>Actions</th></tr>
+    </thead>
+    <tbody>
+    {% for row in rows %}{% set u = row.user %}
+      <tr>
+        <td><b>{{ u.full_name or "Unknown" }}</b>{% if u.username %}<br><span class="muted">@{{ u.username }}</span>{% endif %}</td>
+        <td class="muted">{{ u.telegram_id }}</td>
+        <td>
+          {% if u.is_super_admin %}<span class="badge b-super">super admin</span>
+          {% elif u.is_admin %}<span class="badge b-admin">admin</span>
+          {% else %}<span class="badge b-user">user</span>{% endif %}
+        </td>
+        <td>{% if u.is_suspended %}<span class="badge b-susp">suspended</span>{% else %}<span class="badge b-active">active</span>{% endif %}</td>
+        <td>{{ row.today_reports }} / {{ row.total_reports }}</td>
+        <td class="muted">{{ u.last_seen_at | local }}</td>
+        <td>
+          {% if u.is_super_admin %}<span class="muted">—</span>{% else %}
+          <div class="actions">
+            {% macro act(action, label, cls="", confirm=None) %}
+            <form method="post" action="/users/{{ u.telegram_id }}/{{ action }}"
+                  {% if confirm %}onsubmit="return confirm('{{ confirm }}')"{% endif %}>
+              <input type="hidden" name="csrf" value="{{ csrf }}">
+              <input type="hidden" name="q" value="{{ q }}">
+              <button class="{{ cls }}" type="submit">{{ label }}</button>
+            </form>
+            {% endmacro %}
+            {% if u.role == "admin" %}{{ act("remove_admin", "Remove admin") }}
+            {% else %}{{ act("make_admin", "Make admin", "primary") }}{% endif %}
+            {% if u.is_suspended %}{{ act("unsuspend", "Unsuspend", "ok") }}
+            {% else %}{{ act("suspend", "Suspend", "danger", "Suspend this user?") }}{% endif %}
+          </div>
+          {% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="7" class="muted" style="text-align:center;padding:30px">
+        No users yet. Users appear here after they send /start to the bot.
+      </td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</div>
+{% endblock %}
