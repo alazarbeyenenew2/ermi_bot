@@ -29,7 +29,8 @@
 <div class="stats">
   <div class="card stat"><span class="muted">Users</span><b>{{ stats.users }}</b></div>
   <div class="card stat"><span class="muted">Admins</span><b>{{ stats.admins }}</b></div>
-  <div class="card stat"><span class="muted">Suspended</span><b>{{ stats.suspended }}</b></div>
+  <div class="card stat"><span class="muted">Waiting for approval</span><b>{{ stats.waiting }}</b></div>
+  <div class="card stat"><span class="muted">Blocked</span><b>{{ stats.blocked }}</b></div>
   <div class="card stat"><span class="muted">Reports today</span><b>{{ stats.today }}</b></div>
 </div>
 
@@ -57,7 +58,9 @@
           {% elif u.is_admin %}<span class="badge b-admin">admin</span>
           {% else %}<span class="badge b-user">user</span>{% endif %}
         </td>
-        <td>{% if u.is_suspended %}<span class="badge b-susp">suspended</span>{% else %}<span class="badge b-active">active</span>{% endif %}</td>
+        <td>{% if u.is_suspended %}<span class="badge b-susp">blocked</span>
+            {% elif u.is_pending %}<span class="badge b-super">waiting</span>
+            {% else %}<span class="badge b-active">approved</span>{% endif %}</td>
         <td>{{ row.today_reports }} / {{ row.total_reports }}</td>
         <td class="muted">{{ u.last_seen_at | local }}</td>
         <td>
@@ -71,10 +74,11 @@
               <button class="{{ cls }}" type="submit">{{ label }}</button>
             </form>
             {% endmacro %}
+            {% if u.is_pending %}{{ act("approve", "Approve", "ok") }}{% endif %}
             {% if u.role == "admin" %}{{ act("remove_admin", "Remove admin") }}
             {% else %}{{ act("make_admin", "Make admin", "primary") }}{% endif %}
-            {% if u.is_suspended %}{{ act("unsuspend", "Unsuspend", "ok") }}
-            {% else %}{{ act("suspend", "Suspend", "danger", "Suspend this user?") }}{% endif %}
+            {% if u.is_suspended %}{{ act("unblock", "Unblock", "ok") }}
+            {% else %}{{ act("block", "Block", "danger", "Block this user?") }}{% endif %}
           </div>
           {% endif %}
         </td>

@@ -61,13 +61,18 @@ ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("users", "List and manage users"),
 ]
 
-# action -> (label, note sent to the user)
+# action -> (button label, note sent to the user)
 ACTIONS = {
+    "approve": ("✅ Approve", "✅ An admin approved your account. You can send reports now."),
     "make_admin": ("🛡 Make admin", "🛡 You are now an <b>admin</b>. Use the buttons below to read reports."),
     "remove_admin": ("Remove admin", "You are no longer an admin."),
-    "suspend": ("⛔ Suspend", "⛔ Your account has been suspended."),
-    "unsuspend": ("✅ Unsuspend", "✅ Your account is active again. You can send reports."),
+    "block": ("⛔ Block", "⛔ You have been blocked. Your reports will not be saved."),
+    "unblock": ("✅ Unblock", "✅ You have been unblocked. You can send reports again."),
 }
+
+PENDING_TEXT = ("⏳ Your account is waiting for an admin to approve it. "
+                "You'll get a message here as soon as you can send reports.")
+BLOCKED_TEXT = "⛔ You are blocked. Contact an admin."
 
 
 def main_keyboard(user: User) -> ReplyKeyboardMarkup:
@@ -86,9 +91,27 @@ def admin_menu() -> InlineKeyboardMarkup:
 
 
 # ---------- helpers ----------
-def _register(update: Update) -> User:
+def _register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> User:
     tg = update.effective_user
-    return db.upsert_user(tg.id, tg.username, tg.full_name)
+    is_new = db.get_user(tg.id) is None
+    user = db.upsert_user(tg.id, tg.username, tg.full_name)
+    if is_new and user.is_pending:
+        context.application.create_task(_announce_new_user(context.application, user))
+    return user
+
+
+async def _announce_new_user(app: Application, user: User) -> None:
+    """Ask every admin to approve or block a new user."""
+    text = (
+        f"🙋 <b>New user</b> wants to send reports:\n{html.escape(user.display_name)} · "
+        f"<code>{user.telegram_id}</code>"
+    )
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton(ACTIONS["approve"][0], callback_data=f"{USER_ACTION}{user.telegram_id}:approve:0"),
+        InlineKeyboardButton(ACTIONS["block"][0], callback_data=f"{USER_ACTION}{user.telegram_id}:block:0"),
+    ]])
+    for admin_id in db.active_admin_ids():
+        await notify(app, admin_id, text, reply_markup=keyboard)
 
 
 def _truncate(text: str, limit: int) -> str:
@@ -133,7 +156,7 @@ async def _admin_from_update(update: Update, context: ContextTypes.DEFAULT_TYPE,
     """Register the caller and answer the button tap, if any. Returns the admin, or None
     (after telling the caller) if they're not an active admin."""
     await _answer_tap(update, clear_buttons)
-    user = _register(update)
+    user = _register(update, context)
     if not user.is_admin or user.is_suspended:
         await context.bot.send_message(update.effective_chat.id, "This is only for admins.",
                                        reply_markup=main_keyboard(user))
@@ -170,14 +193,18 @@ async def apply_user_change(app: Application, telegram_id: int, action: str) -> 
 
 def change_user(telegram_id: int, action: str) -> User:
     """Database part of apply_user_change."""
-    if action == "make_admin":
+    if action == "approve":
+        db.set_approved(telegram_id, True)
+    elif action == "make_admin":
         db.set_role(telegram_id, "admin")
+        db.set_approved(telegram_id, True)
     elif action == "remove_admin":
         db.set_role(telegram_id, "user")
-    elif action == "suspend":
+    elif action == "block":
         db.set_suspended(telegram_id, True)
-    elif action == "unsuspend":
+    elif action == "unblock":
         db.set_suspended(telegram_id, False)
+        db.set_approved(telegram_id, True)
     else:
         raise ValueError(f"Unknown action {action!r}")
     return db.get_user(telegram_id)
@@ -185,11 +212,14 @@ def change_user(telegram_id: int, action: str) -> User:
 
 # ---------- start / send report ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = _register(update)
+    user = _register(update, context)
     await set_commands_for(context.application, user)
     if user.is_suspended:
-        await update.message.reply_text("⛔ Your account is suspended. Contact an admin.",
-                                        reply_markup=main_keyboard(user))
+        await update.message.reply_text(BLOCKED_TEXT, reply_markup=main_keyboard(user))
+        return
+    if user.is_pending:
+        await update.message.reply_text(f"Hi {html.escape(update.effective_user.first_name or '')} 👋\n\n"
+                                        + PENDING_TEXT, reply_markup=main_keyboard(user))
         return
 
     text = (
@@ -202,15 +232,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             "\n\n🛡 <b>You are an admin.</b>\n"
             f"{BTN_READ} – read today's reports, one user at a time\n"
             f"{BTN_STATUS} – summary of today's reports\n"
-            f"{BTN_USERS} – list users, make admins, suspend"
+            f"{BTN_USERS} – approve new users, make admins, block"
         )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
 
 
 async def send_report_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = _register(update)
+    user = _register(update, context)
     if user.is_suspended:
-        await update.message.reply_text("⛔ Your account is suspended. You can't send reports.")
+        await update.message.reply_text(BLOCKED_TEXT)
+        return
+    if user.is_pending:
+        await update.message.reply_text(PENDING_TEXT)
         return
     await update.message.reply_text(
         "📝 Send your report now: type a <b>text message</b>, or send a <b>photo</b> / album / image file "
@@ -222,13 +255,13 @@ async def send_report_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ---------- report browser (own reports, or any user's for admins) ----------
 async def my_reports(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = _register(update)
+    user = _register(update, context)
     await _show_reports(update, context, user, user.telegram_id, local_today())
 
 
 async def reports_day(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _, target, day = update.callback_query.data.split(":")
-    viewer = _register(update)
+    viewer = _register(update, context)
     await _answer_tap(update, clear_buttons=True)
     await _show_reports(update, context, viewer, int(target), datetime.strptime(day, "%Y%m%d").date())
 
@@ -296,6 +329,9 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         f"Reports: {s['total']} from {s['reporters']} user(s)\n"
         f"Unread by you: {s['unread']} from {len(pending)} user(s)"
     )
+    waiting = sum(1 for r in db.list_users() if r["user"].is_pending)
+    if waiting:
+        text += f"\n⏳ Waiting for approval: {waiting} (see {BTN_USERS})"
     if pending:
         text += "\n\n" + "\n".join(f"• {html.escape(u.display_name)} – {n}" for u, n in pending[:30])
         if len(pending) > 30:
@@ -307,7 +343,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ---------- admin: users ----------
 def _badge(u: User) -> str:
-    badge = "⭐" if u.is_super_admin else "🛡" if u.is_admin else "👤"
+    badge = "⭐" if u.is_super_admin else "🛡" if u.is_admin else "⏳" if u.is_pending else "👤"
     return badge + ("⛔" if u.is_suspended else "")
 
 
@@ -340,8 +376,9 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     chunk = rows[page * USERS_PER_PAGE:(page + 1) * USERS_PER_PAGE]
 
     admins = sum(1 for r in rows if r["user"].is_admin)
-    suspended = sum(1 for r in rows if r["user"].is_suspended)
-    lines = [f"👥 <b>Users</b>: {len(rows)} ({admins} admin, {suspended} suspended)"]
+    blocked = sum(1 for r in rows if r["user"].is_suspended)
+    waiting = sum(1 for r in rows if r["user"].is_pending)
+    lines = [f"👥 <b>Users</b>: {len(rows)} ({admins} admin, {waiting} waiting, {blocked} blocked)"]
     if pages > 1:
         lines[0] += f" · page {page + 1}/{pages}"
     for r in chunk:
@@ -352,7 +389,7 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
     if not chunk:
         lines.append("No users yet.")
-    lines.append("\n⭐ super admin · 🛡 admin · 👤 user · ⛔ suspended\nTap a user to manage them.")
+    lines.append("\n⭐ super admin · 🛡 admin · 👤 user · ⏳ waiting for approval · ⛔ blocked\nTap a user to manage them.")
 
     buttons = [
         InlineKeyboardButton(f"{_badge(r['user'])} {_truncate(r['user'].full_name or str(r['user'].telegram_id), 24)}",
@@ -371,15 +408,20 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 def _allowed_actions(admin: User, target: User) -> list[str]:
-    """Super admins can change roles and suspend anyone (except super admins and themselves).
-    Other admins can only suspend / unsuspend regular users."""
+    """Any admin can approve, block / unblock and make admin. Only super admins can remove an
+    admin or block one. Nobody can change a super admin or themselves."""
     if target.is_super_admin or target.telegram_id == admin.telegram_id:
         return []
     actions = []
-    if admin.is_super_admin:
-        actions.append("remove_admin" if target.role == "admin" else "make_admin")
-    if admin.is_super_admin or not target.is_admin:
-        actions.append("unsuspend" if target.is_suspended else "suspend")
+    if target.is_pending:
+        actions.append("approve")
+    if target.role == "admin":
+        if admin.is_super_admin:
+            actions.append("remove_admin")
+    elif not target.is_suspended:
+        actions.append("make_admin")
+    if not target.is_admin or admin.is_super_admin:
+        actions.append("unblock" if target.is_suspended else "block")
     return actions
 
 
@@ -391,7 +433,7 @@ async def _render_user_card(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         f"{_badge(target)} <b>{html.escape(target.display_name)}</b>\n"
         f"ID: <code>{target.telegram_id}</code>\n"
         f"Role: {role}\n"
-        f"Status: {'⛔ Suspended' if target.is_suspended else 'Active'}\n"
+        f"Status: {'⛔ Blocked' if target.is_suspended else '⏳ Waiting for approval' if target.is_pending else 'Approved'}\n"
         f"Reports: today {today} · total {total}\n"
         f"Joined: {to_local(target.created_at):%Y-%m-%d} · last seen {to_local(target.last_seen_at):%Y-%m-%d %H:%M}"
     )
@@ -401,7 +443,7 @@ async def _render_user_card(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     elif target.telegram_id == admin.telegram_id:
         text += "\n\nThis is you."
     elif not actions:
-        text += "\n\nOnly super admins can change other admins."
+        text += "\n\nOnly super admins can remove or block other admins."
 
     kb = [[InlineKeyboardButton(ACTIONS[a][0], callback_data=f"{USER_ACTION}{target.telegram_id}:{a}:{page}")
            for a in actions]] if actions else []
@@ -426,7 +468,7 @@ async def user_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def user_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.callback_query
     _, target_id, action, page = query.data.split(":")
-    admin = _register(update)
+    admin = _register(update, context)
     target = db.get_user(int(target_id))
     if not admin.is_admin or admin.is_suspended:
         await query.answer("Only for admins.", show_alert=True)
@@ -535,9 +577,16 @@ async def _send_group(bot, chat_id: int, reporter: User, group: list[Report]) ->
 # ---------- report submission ----------
 async def receive_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message
-    user = _register(update)
-    if user.is_suspended:
-        await msg.reply_text("⛔ Your account is suspended. Your report was not saved.")
+    user = _register(update, context)
+    if not user.can_report:
+        # Albums arrive as several messages; answer only once.
+        refused: set = context.bot_data.setdefault("refused_albums", set())
+        if msg.media_group_id in refused:
+            return
+        if msg.media_group_id:
+            refused.add(msg.media_group_id)
+        reason = BLOCKED_TEXT if user.is_suspended else PENDING_TEXT
+        await msg.reply_text(f"{reason}\n\nYour report was not saved.", reply_markup=main_keyboard(user))
         return
 
     if msg.photo:

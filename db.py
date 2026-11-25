@@ -12,7 +12,8 @@ CREATE TABLE IF NOT EXISTS users (
     username      TEXT,
     full_name     TEXT,
     role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
-    is_suspended  INTEGER NOT NULL DEFAULT 0,
+    is_suspended  INTEGER NOT NULL DEFAULT 0,  -- "blocked"
+    is_approved   INTEGER NOT NULL DEFAULT 0,  -- new users can't send reports until an admin approves them
     created_at    TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL
 );
@@ -46,6 +47,7 @@ class User:
     full_name: str | None
     role: str
     is_suspended: bool
+    is_approved: bool
     created_at: str
     last_seen_at: str
 
@@ -56,6 +58,15 @@ class User:
     @property
     def is_admin(self) -> bool:
         return self.is_super_admin or self.role == "admin"
+
+    @property
+    def is_pending(self) -> bool:
+        """New user waiting for an admin to approve them."""
+        return not self.is_admin and not self.is_approved and not self.is_suspended
+
+    @property
+    def can_report(self) -> bool:
+        return not self.is_suspended and (self.is_approved or self.is_admin)
 
     @property
     def display_name(self) -> str:
@@ -110,6 +121,10 @@ class Database:
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.conn.execute("PRAGMA journal_mode = WAL")
         self.conn.executescript(SCHEMA)
+        columns = {r["name"] for r in self.conn.execute("PRAGMA table_info(users)")}
+        if "is_approved" not in columns:
+            # Databases from before approval existed: everyone already there stays allowed.
+            self.conn.execute("ALTER TABLE users ADD COLUMN is_approved INTEGER NOT NULL DEFAULT 1")
         self.conn.commit()
 
     # ---------- users ----------
@@ -117,8 +132,8 @@ class Database:
         now = _now()
         self.conn.execute(
             """
-            INSERT INTO users (telegram_id, username, full_name, created_at, last_seen_at)
-            VALUES (?, ?, ?, ?, ?)
+            INSERT INTO users (telegram_id, username, full_name, is_approved, created_at, last_seen_at)
+            VALUES (?, ?, ?, 0, ?, ?)
             ON CONFLICT(telegram_id) DO UPDATE SET
                 username = excluded.username,
                 full_name = excluded.full_name,
@@ -128,7 +143,7 @@ class Database:
         )
         if telegram_id in config.SUPER_ADMIN_IDS:
             self.conn.execute(
-                "UPDATE users SET role = 'admin', is_suspended = 0 WHERE telegram_id = ?",
+                "UPDATE users SET role = 'admin', is_suspended = 0, is_approved = 1 WHERE telegram_id = ?",
                 (telegram_id,),
             )
         self.conn.commit()
@@ -151,7 +166,9 @@ class Database:
             FROM users u
             WHERE ? = '%%' OR u.full_name LIKE ? OR u.username LIKE ?
                   OR CAST(u.telegram_id AS TEXT) LIKE ?
-            ORDER BY (u.role = 'admin') DESC, u.full_name COLLATE NOCASE
+            -- Users waiting for approval first, then admins, then everyone else by name.
+            ORDER BY (u.role = 'user' AND u.is_approved = 0 AND u.is_suspended = 0) DESC,
+                     (u.role = 'admin') DESC, u.full_name COLLATE NOCASE
             """,
             (start, end, like, like, like, like),
         ).fetchall()
@@ -162,6 +179,12 @@ class Database:
 
     def set_role(self, telegram_id: int, role: str) -> None:
         self.conn.execute("UPDATE users SET role = ? WHERE telegram_id = ?", (role, telegram_id))
+        self.conn.commit()
+
+    def set_approved(self, telegram_id: int, approved: bool) -> None:
+        self.conn.execute(
+            "UPDATE users SET is_approved = ? WHERE telegram_id = ?", (int(approved), telegram_id)
+        )
         self.conn.commit()
 
     def set_suspended(self, telegram_id: int, suspended: bool) -> None:
@@ -294,6 +317,7 @@ class Database:
 def _user(row: sqlite3.Row) -> User:
     data = {k: row[k] for k in User.__dataclass_fields__}
     data["is_suspended"] = bool(data["is_suspended"])
+    data["is_approved"] = bool(data["is_approved"])
     return User(**data)
 
 
