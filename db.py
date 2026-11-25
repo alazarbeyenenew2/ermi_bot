@@ -282,19 +282,27 @@ class Database:
         ).fetchone()
         return row["today"] or 0, row["total"]
 
-    def user_report_days(self, user_id: int) -> list[date]:
-        """Local calendar days on which this user sent reports, oldest first."""
-        rows = self.conn.execute(
-            "SELECT created_at FROM reports WHERE user_id = ?", (user_id,)
-        ).fetchall()
-        return sorted({to_local(r["created_at"]).date() for r in rows})
+    def _range_where(self, user_id: int | None, start: str | None, end: str | None):
+        where, args = [], []
+        if user_id is not None:
+            where.append("user_id = ?"); args.append(user_id)
+        if start:
+            where.append("created_at >= ?"); args.append(start)
+        if end:
+            where.append("created_at < ?"); args.append(end)
+        return (" WHERE " + " AND ".join(where)) if where else "", args
 
-    def user_reports_on(self, user_id: int, day: date) -> list[Report]:
-        start, end = day_range_utc(day)
+    def count_reports(self, user_id: int | None, start: str | None, end: str | None) -> int:
+        """Reports in [start, end) from one user, or from everyone when user_id is None."""
+        where, args = self._range_where(user_id, start, end)
+        return self.conn.execute(f"SELECT COUNT(*) FROM reports{where}", args).fetchone()[0]
+
+    def reports_newest_first(self, user_id: int | None, start: str | None, end: str | None,
+                             limit: int, offset: int) -> list[Report]:
+        where, args = self._range_where(user_id, start, end)
         rows = self.conn.execute(
-            """SELECT * FROM reports WHERE user_id = ? AND created_at >= ? AND created_at < ?
-               ORDER BY created_at, id""",
-            (user_id, start, end),
+            f"SELECT * FROM reports{where} ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
+            args + [limit, offset],
         ).fetchall()
         return [Report(**dict(r)) for r in rows]
 

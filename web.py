@@ -1,4 +1,4 @@
-"""Web admin page: manage users (approve, make admin, remove admin, block, unblock)."""
+"""Web admin page: manage users (accept, make admin, remove admin, suspend, activate)."""
 import hmac
 import secrets
 from pathlib import Path

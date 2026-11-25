@@ -4,27 +4,35 @@ A Telegram bot where users send reports (text and images), and admins read each 
 
 ## Features
 
-Everyone gets a keyboard under the text box. Users see **📝 Send report** and **📂 My reports**; admins also get **📖 Read reports**, **📊 Status** and **👥 Manage users**. The keyboard appears after `/start` (or with the reply to the next report sent).
+Everyone gets a keyboard under the text box. Users see **📝 Send report** and **📂 My reports**; admins also get **📖 Read reports**, **📊 Status**, **👥 List users** and **🗂 All reports**. The keyboard appears after `/start` (or with the reply to the next report sent).
 
-**Approval**: new users can't send reports until an admin approves them. When someone sends `/start` for the first time, every admin gets a message with **✅ Approve** and **⛔ Block** buttons, and the user is told they're waiting. Anything they send before approval is not saved. Users who were already in the database when approval was added stay approved.
+**Accepting new users**: new users are **pending** and can't send reports until an admin accepts them. When someone sends `/start` for the first time, every admin gets a message with **✅ Accept** and **⛔ Suspend** buttons, and the user is told they're waiting. Anything they send before that is not saved. Users who were already in the database when this was added stay active.
+
+**Viewing reports**: **📂 My reports**, a user's **📂** button and **🗂 All reports** all ask which reports to show: **Today**, **This week** (from Monday), **This month** or **All**. They're shown 20 at a time (the newest first, **Older ▶** for more), with the date on anything not from today. Viewing reports this way doesn't mark them as read.
 
 **Users** (everyone is a user by default):
 - Send any **text** or **image** (a photo, an album, or an image file; captions are kept) and it's saved as a report. **📝 Send report** explains this.
-- **📂 My reports** (or `/mine`): your reports for today, with ◀ ▶ buttons that jump to the previous or next day you reported.
-- Blocked users get a message saying so, and their reports are not saved.
+- **📂 My reports** (or `/mine`): your own reports, by period.
+- Suspended users get a message saying so, and their reports are not saved.
 
 **Admins** (in Telegram):
 - **Live reports**: every new report is sent to all active admins the moment it arrives, marked "🆕 New report". Albums arrive together as one album. A report delivered this way counts as read, so `/read` only shows reports you missed, for example ones that arrived while you had blocked the bot. Set `LIVE_MARKS_READ=false` to have `/read` show everything anyway, or `LIVE_REPORTS=false` to turn live delivery off.
 - `/read`: shows all of **today's** unread reports from the **next user**, then marks them as read. Tap **Next user ▶** to keep going until you get *"You have read all of today's reports."* Each admin has their own read state.
-- `/status`: today's totals, which users still have unread reports, and how many users are waiting for approval.
-- **👥 Manage users** (or `/users`): every user with their role, status and report counts (today / total), 10 per page, users waiting for approval (⏳) first. Tap a user to open their card with **Approve**, **Make admin / Remove admin**, **Block / Unblock**, and **📂 Reports** (browse their reports by day, without marking them read). The user gets a Telegram message and their keyboard updates.
-  - **Any admin** can approve, make admin, and block / unblock users.
-  - Only **super admins** (`SUPER_ADMIN_IDS`) can remove an admin or block one. Nobody can change a super admin or themselves.
+- `/status`: today's totals, which users still have unread reports, and how many users are pending.
+- **👥 List users** (or `/users`): tabs for **All**, **⏳ Pending**, **✅ Active** and **⛔ Suspended** (with counts), 10 users per page. Next to each user:
+  - their name: opens their details with **Accept**, **Make admin / Remove admin**, **Suspend / Activate** and **📂 Reports**;
+  - **📂**: their reports by period;
+  - one quick button: **✅ Accept** (pending), **⛔ Suspend** (active) or **▶️ Activate** (suspended).
+
+  The user gets a Telegram message about any change and their keyboard updates.
+  - **Any admin** can accept, suspend, activate and make admins.
+  - Only **super admins** (`SUPER_ADMIN_IDS`) can remove an admin or suspend one. Nobody can change a super admin or themselves.
+- **🗂 All reports** (or `/reports`): everyone's reports by period, also at the bottom of the users list.
 - **Inline menu**: Status, Read and the users list also end with **📖 Read**, **📊 Status** and **👥 Users** buttons.
 
 **Web admin page** (`http://<server>:8000`):
 - Lists all users with their role, status and report counts. You can search them.
-- **Approve**, **Make admin**, **Remove admin**, **Block**, **Unblock**. The user gets a Telegram message about the change, and their command menu updates.
+- **Accept**, **Make admin**, **Remove admin**, **Suspend**, **Activate**. The user gets a Telegram message about the change, and their command menu updates.
 - Users listed in `SUPER_ADMIN_IDS` are always admins and can't be changed from the page.
 
 ## Setup
