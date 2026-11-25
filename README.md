@@ -4,11 +4,15 @@ A Telegram bot where users send reports (text, photos, videos, voice messages an
 
 ## Features
 
-The `/start` welcome message is in **Amharic** (other messages and the button labels are in English). Everyone gets a keyboard under the text box. Users see **📝 Send report** and **📂 My reports**; admins also get **📖 Read reports**, **📊 Status**, **👥 List users** and **🗂 All reports**. The keyboard appears after `/start` (or with the reply to the next report sent).
+**The bot speaks Amharic.** Every message, button and command description in Telegram comes from [`texts.py`](texts.py); edit wording there. (The web admin page and this README are in English. The English names below are translations of the Amharic buttons.)
+
+Everyone gets a keyboard under the text box. Users see **📝 ሪፖርት ላክ** (Send report) and **📂 የኔ ሪፖርቶች** (My reports); admins also get **📥 ሪፖርቶችን አንብብ** (Read reports), **📊 ማጠቃለያ** (Summary), **👥 ተጠቃሚዎች** (Users) and **🗂 ሁሉም ሪፖርቶች** (All reports). The keyboard appears after `/start` (or with the reply to the next report sent). Buttons from older English keyboards keep working.
+
+Menus (users list, a user's details, report periods) update the same message instead of sending new ones, to keep the chat tidy.
 
 **Accepting new users**: new users are **pending** and can't send reports until an admin accepts them. When someone sends `/start` for the first time, every admin gets a message with **✅ Accept** and **⛔ Suspend** buttons, and the user is told they're waiting. Anything they send before that is not saved. Users who were already in the database when this was added stay active.
 
-**Viewing reports**: **📂 My reports**, a user's **📂** button and **🗂 All reports** all ask which reports to show: **Today**, **This week** (from Monday), **This month** or **All**. They're shown 20 at a time (the newest first, **Older ▶** for more), with the date on anything not from today. Viewing reports this way doesn't mark them as read.
+**Viewing reports**: **📂 My reports**, a user's **📂** button and **🗂 All reports** all ask which reports to show: **Today**, **This week** (from Monday), **This month** or **All**. The menu turns into a title, then the reports follow, 20 at a time (the newest first, **⬇️ older** for more), with the date on anything not from today. Viewing reports this way doesn't mark them as read.
 
 **Users** (everyone is a user by default):
 - Send a **text message**, **photo**, **video**, **GIF**, **file of any type** (PDF, Word, Excel, ZIP, …), **audio**, **voice message** or **round video**, and it's saved as a report. Albums are kept together and captions are kept. **📝 Send report** explains this. Stickers, locations and contacts aren't saved.
@@ -17,9 +21,9 @@ The `/start` welcome message is in **Amharic** (other messages and the button la
 - Suspended users get a message saying so, and their reports are not saved.
 
 **Admins** (in Telegram):
-- **Every new report is sent to all admins** the moment it arrives (always on), as "🆕 New report from <name>" with **📂 Their reports** and **👤 User** buttons, followed by the report itself. Albums arrive together as one album. The admin who sent a report doesn't get their own. A report delivered this way counts as read, so `/read` only shows reports you missed, for example ones that arrived while you had blocked the bot; set `LIVE_MARKS_READ=false` to have `/read` show everything anyway. Admins only receive these after they've sent `/start` to the bot once (Telegram doesn't let bots message people first).
-- `/read`: shows all of **today's** unread reports from the **next user**, then marks them as read. Tap **Next user ▶** to keep going until you get *"You have read all of today's reports."* Each admin has their own read state.
-- `/status`: today's totals, which users still have unread reports, and how many users are pending.
+- **Every new report is sent to all admins** the moment it arrives (always on), as "🆕 አዲስ ሪፖርት" (new report) with the sender's name and **📂 ሪፖርቶቹ** (their reports) and **👤 ተጠቃሚው** (the user) buttons, followed by the report itself. Albums arrive together as one album. The admin who sent a report doesn't get their own. A report delivered this way counts as read, so `/read` only shows reports you missed, for example ones that arrived while you had blocked the bot; set `LIVE_MARKS_READ=false` to have `/read` show everything anyway. Admins only receive these after they've sent `/start` to the bot once (Telegram doesn't let bots message people first).
+- `/read`: shows all of **today's** unread reports from the **next user**, then marks them as read. Tap **➡️ ቀጣይ ተጠቃሚ** (next user) to keep going until everything is read. Each admin has their own read state.
+- `/status`: today's totals, which users still have unread reports, and how many users are pending, with a button to start reading.
 - **👥 List users** (or `/users`): tabs for **All**, **⏳ Pending**, **✅ Active** and **⛔ Suspended** (with counts), 10 users per page. Next to each user:
   - their name: opens their details with **Accept**, **Make admin / Remove admin**, **Suspend / Activate** and **📂 Reports**;
   - **📂**: their reports by period;
@@ -29,7 +33,6 @@ The `/start` welcome message is in **Amharic** (other messages and the button la
   - **Any admin** can accept, suspend, activate and make admins.
   - Only **super admins** (`SUPER_ADMIN_IDS`) can remove an admin or suspend one. Nobody can change a super admin or themselves.
 - **🗂 All reports** (or `/reports`): everyone's reports by period, also at the bottom of the users list.
-- **Inline menu**: Status, Read and the users list also end with **📖 Read**, **📊 Status** and **👥 Users** buttons.
 
 **Web admin page** (`http://<server>:8000`):
 - Lists all users with their role, status and report counts. You can search them.
@@ -120,6 +123,7 @@ Push to `main`, or run the workflow from the Actions tab. Stop any other copy of
 |---|---|
 | `main.py` | Entry point: runs the bot and the web page in one process |
 | `bot.py` | Telegram handlers (reports, `/read`, `/status`) |
+| `texts.py` | Every text the bot shows in Telegram (Amharic) |
 | `web.py`, `templates/` | Web admin page |
 | `db.py` | SQLite storage (`users`, `reports`, `report_reads`) |
 | `config.py` | Settings from `.env` |
