@@ -206,6 +206,8 @@ async def apply_user_change(app: Application, telegram_id: int, action: str) -> 
 
 def change_user(telegram_id: int, action: str) -> User:
     """Database part of apply_user_change."""
+    if telegram_id in config.SUPER_ADMIN_IDS and action in ("block", "remove_admin"):
+        raise ValueError("Super admins can't be suspended or removed.")
     if action == "approve":
         db.set_approved(telegram_id, True)
     elif action == "make_admin":

@@ -188,6 +188,8 @@ class Database:
         self.conn.commit()
 
     def set_suspended(self, telegram_id: int, suspended: bool) -> None:
+        if suspended and telegram_id in config.SUPER_ADMIN_IDS:
+            raise ValueError("Super admins can't be suspended.")
         self.conn.execute(
             "UPDATE users SET is_suspended = ? WHERE telegram_id = ?", (int(suspended), telegram_id)
         )
@@ -324,7 +326,8 @@ class Database:
 
 def _user(row: sqlite3.Row) -> User:
     data = {k: row[k] for k in User.__dataclass_fields__}
-    data["is_suspended"] = bool(data["is_suspended"])
+    # Super admins are never suspended, whatever the database says.
+    data["is_suspended"] = bool(data["is_suspended"]) and data["telegram_id"] not in config.SUPER_ADMIN_IDS
     data["is_approved"] = bool(data["is_approved"])
     return User(**data)
 
