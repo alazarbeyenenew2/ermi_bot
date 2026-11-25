@@ -1,6 +1,6 @@
 # Report Bot
 
-A Telegram bot where users send reports (text and images), and admins read each day's reports, one user at a time. It comes with a web admin page for managing users.
+A Telegram bot where users send reports (text, photos, videos, voice messages and any file), and admins read each day's reports, one user at a time. It comes with a web admin page for managing users.
 
 ## Features
 
@@ -11,7 +11,8 @@ Everyone gets a keyboard under the text box. Users see **📝 Send report** and 
 **Viewing reports**: **📂 My reports**, a user's **📂** button and **🗂 All reports** all ask which reports to show: **Today**, **This week** (from Monday), **This month** or **All**. They're shown 20 at a time (the newest first, **Older ▶** for more), with the date on anything not from today. Viewing reports this way doesn't mark them as read.
 
 **Users** (everyone is a user by default):
-- Send any **text** or **image** (a photo, an album, or an image file; captions are kept) and it's saved as a report. **📝 Send report** explains this.
+- Send a **text message**, **photo**, **video**, **GIF**, **file of any type** (PDF, Word, Excel, ZIP, …), **audio**, **voice message** or **round video**, and it's saved as a report. Albums are kept together and captions are kept. **📝 Send report** explains this. Stickers, locations and contacts aren't saved.
+- Files stay on Telegram's servers; the bot only stores their Telegram file ID, so there's no size limit beyond Telegram's own.
 - **📂 My reports** (or `/mine`): your own reports, by period.
 - Suspended users get a message saying so, and their reports are not saved.
 
@@ -127,4 +128,4 @@ Push to `main`, or run the workflow from the Actions tab. Stop any other copy of
 ## Production notes
 - Put the admin page behind HTTPS (for example nginx or Caddy as a reverse proxy).
 - Back up the database regularly. It is a single file at `DATABASE_PATH`.
-- Images stay on Telegram's servers. Only their `file_id` is stored.
+- Photos and files stay on Telegram's servers. Only their `file_id` is stored.

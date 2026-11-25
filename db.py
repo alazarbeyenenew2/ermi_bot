@@ -6,6 +6,27 @@ from datetime import date, datetime, time, timedelta, timezone
 
 import config
 
+# Kinds of report: plain text, or a Telegram file of one of these types.
+REPORT_KINDS = ("text", "photo", "video", "animation", "document", "audio", "voice", "video_note")
+
+REPORTS_TABLE = """
+CREATE TABLE IF NOT EXISTS {name} (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id         INTEGER NOT NULL REFERENCES users(telegram_id),
+    kind            TEXT NOT NULL CHECK (kind IN ({kinds})),
+    text            TEXT,
+    file_id         TEXT,
+    media_group_id  TEXT,
+    created_at      TEXT NOT NULL
+);
+"""
+REPORT_COLUMNS = "id, user_id, kind, text, file_id, media_group_id, created_at"
+
+
+def _reports_table(name: str) -> str:
+    return REPORTS_TABLE.format(name=name, kinds=", ".join(f"'{k}'" for k in REPORT_KINDS))
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS users (
     telegram_id   INTEGER PRIMARY KEY,
@@ -18,15 +39,7 @@ CREATE TABLE IF NOT EXISTS users (
     last_seen_at  TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS reports (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    user_id         INTEGER NOT NULL REFERENCES users(telegram_id),
-    kind            TEXT NOT NULL CHECK (kind IN ('text', 'photo', 'document')),
-    text            TEXT,
-    file_id         TEXT,
-    media_group_id  TEXT,
-    created_at      TEXT NOT NULL
-);
+""" + _reports_table("reports") + """
 CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_id, created_at);
 
@@ -126,6 +139,35 @@ class Database:
             # Databases from before approval existed: everyone already there stays allowed.
             self.conn.execute("ALTER TABLE users ADD COLUMN is_approved INTEGER NOT NULL DEFAULT 1")
         self.conn.commit()
+        self._migrate_report_kinds()
+
+    def _migrate_report_kinds(self) -> None:
+        """Older databases only allowed text / photo / document reports. SQLite can't change a CHECK
+        constraint in place, so copy the table into one with the current list of kinds."""
+        sql = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'reports'"
+        ).fetchone()["sql"]
+        if all(f"'{k}'" in sql for k in REPORT_KINDS):
+            return
+        # Foreign keys off, or dropping the old table would cascade-delete everyone's read state.
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self.conn.executescript(
+                "BEGIN;"
+                + _reports_table("reports_new")
+                + f"INSERT INTO reports_new ({REPORT_COLUMNS}) SELECT {REPORT_COLUMNS} FROM reports;"
+                "DROP TABLE reports;"
+                "ALTER TABLE reports_new RENAME TO reports;"
+                "CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);"
+                "CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_id, created_at);"
+                "COMMIT;"
+            )
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+        finally:
+            self.conn.execute("PRAGMA foreign_keys = ON")
 
     # ---------- users ----------
     def upsert_user(self, telegram_id: int, username: str | None, full_name: str | None) -> User:

@@ -9,7 +9,10 @@ from telegram import (
     BotCommandScopeChat,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaAudio,
+    InputMediaDocument,
     InputMediaPhoto,
+    InputMediaVideo,
     KeyboardButton,
     ReplyKeyboardMarkup,
     Update,
@@ -239,7 +242,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
     text = (
         f"Hi {html.escape(update.effective_user.first_name or '')} 👋\n\n"
-        f"{BTN_SEND} – how to send a report (just send me a <b>text message</b> or an <b>image</b>)\n"
+        f"{BTN_SEND} – how to send a report (just send me a <b>message</b>, <b>photo</b> or any <b>file</b>)\n"
         f"{BTN_MINE} – see the reports you've sent (today, this week, this month or all)"
     )
     if user.is_admin:
@@ -262,8 +265,9 @@ async def send_report_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await update.message.reply_text(PENDING_TEXT)
         return
     await update.message.reply_text(
-        "📝 Send your report now: type a <b>text message</b>, or send a <b>photo</b> / album / image file "
-        "(add a caption to describe it). Every message you send is saved as a report.",
+        "📝 Send your report now: type a <b>text message</b>, or send a <b>photo</b>, <b>video</b>, "
+        "<b>file</b> (PDF, Word, Excel, …), <b>voice message</b> or <b>audio</b>. Albums work too. "
+        "Add a caption to describe it. Every message you send is saved as a report.",
         parse_mode=ParseMode.HTML,
         reply_markup=main_keyboard(user),
     )
@@ -632,16 +636,29 @@ async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                                reply_markup=admin_menu())
 
 
+# Report kinds that can be sent together as an album, and the InputMedia type for each.
+ALBUM_MEDIA = {"photo": InputMediaPhoto, "video": InputMediaVideo,
+               "document": InputMediaDocument, "audio": InputMediaAudio}
+
+
+def _album_compatible(a: str, b: str) -> bool:
+    """Telegram albums mix photos and videos; documents and audio only go with their own kind."""
+    visual = {"photo", "video"}
+    return a == b or (a in visual and b in visual)
+
+
 def _group_albums(reports: list[Report]) -> list[list[Report]]:
-    """Group consecutive photos from the same album so they can be sent together."""
+    """Group consecutive items from the same album so they can be sent together."""
     groups: list[list[Report]] = []
     for r in reports:
+        last = groups[-1][-1] if groups else None
         if (
-            groups
-            and r.kind == "photo"
+            last
             and r.media_group_id
-            and groups[-1][-1].kind == "photo"
-            and groups[-1][-1].media_group_id == r.media_group_id
+            and last.media_group_id == r.media_group_id
+            and r.kind in ALBUM_MEDIA
+            and last.kind in ALBUM_MEDIA
+            and _album_compatible(last.kind, r.kind)
             and len(groups[-1]) < 10
         ):
             groups[-1].append(r)
@@ -654,7 +671,7 @@ async def _send_group(bot, chat_id: int, reporter: User, group: list[Report]) ->
     first = group[0]
     if len(group) > 1:
         media = [
-            InputMediaPhoto(
+            ALBUM_MEDIA[r.kind](
                 r.file_id,
                 caption=_caption(reporter, r, CAPTION_LIMIT) if (i == 0 or r.text) else None,
                 parse_mode=ParseMode.HTML,
@@ -662,14 +679,33 @@ async def _send_group(bot, chat_id: int, reporter: User, group: list[Report]) ->
             for i, r in enumerate(group)
         ]
         await bot.send_media_group(chat_id, media)
-    elif first.kind == "photo":
-        await bot.send_photo(chat_id, first.file_id, caption=_caption(reporter, first, CAPTION_LIMIT),
-                             parse_mode=ParseMode.HTML)
-    elif first.kind == "document":
-        await bot.send_document(chat_id, first.file_id, caption=_caption(reporter, first, CAPTION_LIMIT),
-                                parse_mode=ParseMode.HTML)
+        return
+    caption = _caption(reporter, first, CAPTION_LIMIT)
+    senders = {
+        "photo": bot.send_photo, "video": bot.send_video, "animation": bot.send_animation,
+        "document": bot.send_document, "audio": bot.send_audio, "voice": bot.send_voice,
+    }
+    if first.kind in senders:
+        await senders[first.kind](chat_id, first.file_id, caption=caption, parse_mode=ParseMode.HTML)
+    elif first.kind == "video_note":
+        # Round videos can't have a caption: say who sent it first.
+        await bot.send_message(chat_id, caption, parse_mode=ParseMode.HTML)
+        await bot.send_video_note(chat_id, first.file_id)
     else:
         await bot.send_message(chat_id, _caption(reporter, first, TEXT_LIMIT), parse_mode=ParseMode.HTML)
+
+
+def _report_from_message(msg) -> tuple[str, str | None, str | None] | None:
+    """(kind, text, file_id) for a message, or None if it isn't something we save."""
+    # Animations (GIFs) also carry msg.document, so check them before documents.
+    for kind, media in [("photo", msg.photo[-1] if msg.photo else None), ("video", msg.video),
+                        ("animation", msg.animation), ("document", msg.document), ("audio", msg.audio),
+                        ("voice", msg.voice), ("video_note", msg.video_note)]:
+        if media:
+            return kind, msg.caption, media.file_id
+    if msg.text:
+        return "text", msg.text, None
+    return None
 
 
 # ---------- report submission ----------
@@ -687,14 +723,11 @@ async def receive_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         await msg.reply_text(f"{reason}\n\nYour report was not saved.", reply_markup=main_keyboard(user))
         return
 
-    if msg.photo:
-        report_id = db.add_report(user.telegram_id, "photo", msg.caption, msg.photo[-1].file_id, msg.media_group_id)
-    elif msg.document:
-        report_id = db.add_report(user.telegram_id, "document", msg.caption, msg.document.file_id, msg.media_group_id)
-    elif msg.text:
-        report_id = db.add_report(user.telegram_id, "text", msg.text)
-    else:
+    found = _report_from_message(msg)
+    if not found:
         return
+    kind, text, file_id = found
+    report_id = db.add_report(user.telegram_id, kind, text, file_id, msg.media_group_id)
 
     # Every admin is told about every new report.
     _queue_live_delivery(context, user, report_id, msg.media_group_id)
@@ -780,7 +813,10 @@ async def _deliver_live(app: Application, reporter: User, report_ids: list[int])
 
 
 async def unsupported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text("Please send your report as text or an image.")
+    await update.message.reply_text(
+        "Please send your report as a message, photo, video, voice message or file (stickers, "
+        "locations and contacts aren't saved)."
+    )
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -816,7 +852,8 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(reports_page, pattern=rf"^{REPORTS}\d+:[twma]:\d+$"))
     app.add_handler(
         MessageHandler(
-            private & (filters.PHOTO | filters.Document.IMAGE | (filters.TEXT & ~filters.COMMAND)),
+            private & (filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL
+                       | filters.AUDIO | filters.VOICE | filters.VIDEO_NOTE | (filters.TEXT & ~filters.COMMAND)),
             receive_report,
         )
     )
