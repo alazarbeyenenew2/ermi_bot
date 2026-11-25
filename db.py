@@ -17,9 +17,11 @@ CREATE TABLE IF NOT EXISTS {name} (
     text            TEXT,
     file_id         TEXT,
     media_group_id  TEXT,
-    created_at      TEXT NOT NULL
+    created_at      TEXT NOT NULL,
+    file_name       TEXT  -- original name of an uploaded document / audio / video, if Telegram gives one
 );
 """
+# Columns every version of the reports table has (used when copying an old table).
 REPORT_COLUMNS = "id, user_id, kind, text, file_id, media_group_id, created_at"
 
 
@@ -96,6 +98,7 @@ class Report:
     file_id: str | None
     media_group_id: str | None
     created_at: str
+    file_name: str | None = None
 
 
 def _now() -> str:
@@ -140,6 +143,9 @@ class Database:
             self.conn.execute("ALTER TABLE users ADD COLUMN is_approved INTEGER NOT NULL DEFAULT 1")
         self.conn.commit()
         self._migrate_report_kinds()
+        if "file_name" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(reports)")}:
+            self.conn.execute("ALTER TABLE reports ADD COLUMN file_name TEXT")
+            self.conn.commit()
 
     def _migrate_report_kinds(self) -> None:
         """Older databases only allowed text / photo / document reports. SQLite can't change a CHECK
@@ -245,11 +251,12 @@ class Database:
         text: str | None,
         file_id: str | None = None,
         media_group_id: str | None = None,
+        file_name: str | None = None,
     ) -> int:
         cur = self.conn.execute(
-            """INSERT INTO reports (user_id, kind, text, file_id, media_group_id, created_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (user_id, kind, text, file_id, media_group_id, _now()),
+            """INSERT INTO reports (user_id, kind, text, file_id, media_group_id, created_at, file_name)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, kind, text, file_id, media_group_id, _now(), file_name),
         )
         self.conn.commit()
         return cur.lastrowid

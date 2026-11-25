@@ -4,7 +4,7 @@ A Telegram bot where users send reports (text, photos, videos, voice messages an
 
 ## Features
 
-Everyone gets a keyboard under the text box. Users see **📝 Send report** and **📂 My reports**; admins also get **📖 Read reports**, **📊 Status**, **👥 List users** and **🗂 All reports**. The keyboard appears after `/start` (or with the reply to the next report sent).
+The `/start` welcome message is in **Amharic** (other messages and the button labels are in English). Everyone gets a keyboard under the text box. Users see **📝 Send report** and **📂 My reports**; admins also get **📖 Read reports**, **📊 Status**, **👥 List users** and **🗂 All reports**. The keyboard appears after `/start` (or with the reply to the next report sent).
 
 **Accepting new users**: new users are **pending** and can't send reports until an admin accepts them. When someone sends `/start` for the first time, every admin gets a message with **✅ Accept** and **⛔ Suspend** buttons, and the user is told they're waiting. Anything they send before that is not saved. Users who were already in the database when this was added stay active.
 
@@ -13,7 +13,7 @@ Everyone gets a keyboard under the text box. Users see **📝 Send report** and 
 **Users** (everyone is a user by default):
 - Send a **text message**, **photo**, **video**, **GIF**, **file of any type** (PDF, Word, Excel, ZIP, …), **audio**, **voice message** or **round video**, and it's saved as a report. Albums are kept together and captions are kept. **📝 Send report** explains this. Stickers, locations and contacts aren't saved.
 - Files stay on Telegram's servers; the bot only stores their Telegram file ID, so there's no size limit beyond Telegram's own.
-- **📂 My reports** (or `/mine`): your own reports, by period.
+- **📂 My reports** (or `/mine`): your own reports, by period. Uploaded files show their file name (📎) under the sender and time; this works for files sent after this was added.
 - Suspended users get a message saying so, and their reports are not saved.
 
 **Admins** (in Telegram):

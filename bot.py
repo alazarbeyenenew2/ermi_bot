@@ -145,6 +145,8 @@ def _header(user: User, report: Report) -> str:
 
 def _caption(user: User, report: Report, limit: int) -> str:
     header = _header(user, report)
+    if report.file_name:
+        header += f"\n📎 <code>{html.escape(_truncate(report.file_name, 200))}</code>"
     raw = report.text or ""
     # Shorten the raw text (not the escaped HTML) so we never cut an entity in half.
     while True:
@@ -232,26 +234,37 @@ def change_user(telegram_id: int, action: str) -> User:
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = _register(update, context)
     await set_commands_for(context.application, user)
+    # The welcome message is in Amharic. Button labels stay as they appear on the keyboard.
+    hello = f"ሰላም {html.escape(update.effective_user.first_name or '')} 👋\n\n"
     if user.is_suspended:
-        await update.message.reply_text(BLOCKED_TEXT, reply_markup=main_keyboard(user))
+        await update.message.reply_text(hello + "⛔ መለያዎ ታግዷል። እባክዎ አስተዳዳሪን ያነጋግሩ።",
+                                        parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
         return
     if user.is_pending:
-        await update.message.reply_text(f"Hi {html.escape(update.effective_user.first_name or '')} 👋\n\n"
-                                        + PENDING_TEXT, reply_markup=main_keyboard(user))
+        await update.message.reply_text(
+            hello + "ወደ ሪፖርት ቦት እንኳን በደህና መጡ።\n\n"
+            "⏳ መለያዎ አስተዳዳሪ እስኪያጸድቀው በመጠባበቅ ላይ ነው። "
+            "ሪፖርት መላክ ሲችሉ እዚሁ መልእክት ይደርስዎታል።",
+            parse_mode=ParseMode.HTML,
+            reply_markup=main_keyboard(user),
+        )
         return
 
     text = (
-        f"Hi {html.escape(update.effective_user.first_name or '')} 👋\n\n"
-        f"{BTN_SEND} – how to send a report (just send me a <b>message</b>, <b>photo</b> or any <b>file</b>)\n"
-        f"{BTN_MINE} – see the reports you've sent (today, this week, this month or all)"
+        hello + "ወደ ሪፖርት ቦት እንኳን በደህና መጡ።\n\n"
+        "📝 ሪፖርት ለመላክ <b>መልእክት</b>፣ <b>ፎቶ</b>፣ <b>ቪዲዮ</b>፣ <b>የድምፅ መልእክት</b> "
+        "ወይም ማንኛውንም <b>ፋይል</b> (PDF፣ Word፣ Excel …) ይላኩልኝ።\n\n"
+        f"{BTN_SEND} – ሪፖርት እንዴት እንደሚላክ ያሳያል\n"
+        f"{BTN_MINE} – የላኳቸውን ሪፖርቶች ያሳያል (የዛሬ፣ የዚህ ሳምንት፣ የዚህ ወር ወይም ሁሉንም)"
     )
     if user.is_admin:
         text += (
-            "\n\n🛡 <b>You are an admin.</b>\n"
-            f"{BTN_READ} – read today's reports, one user at a time\n"
-            f"{BTN_STATUS} – summary of today's reports\n"
-            f"{BTN_USERS} – accept new users, suspend, activate, make admins, see a user's reports\n"
-            f"{BTN_ALL} – everyone's reports for today, this week, this month or all time"
+            "\n\n🛡 <b>እርስዎ አስተዳዳሪ ነዎት።</b>\n"
+            f"{BTN_READ} – የዛሬን ሪፖርቶች በየተጠቃሚው አንድ በአንድ ያነቡበታል\n"
+            f"{BTN_STATUS} – የዛሬ ሪፖርቶች ማጠቃለያ\n"
+            f"{BTN_USERS} – አዲስ ተጠቃሚዎችን መቀበል (Accept)፣ ማገድ (Suspend)፣ እንደገና መፍቀድ (Activate)፣ "
+            "አስተዳዳሪ ማድረግ እና የተጠቃሚን ሪፖርቶች ማየት\n"
+            f"{BTN_ALL} – የሁሉንም ተጠቃሚዎች ሪፖርቶች (የዛሬ፣ የዚህ ሳምንት፣ የዚህ ወር ወይም ሁሉንም)"
         )
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
 
@@ -673,7 +686,7 @@ async def _send_group(bot, chat_id: int, reporter: User, group: list[Report]) ->
         media = [
             ALBUM_MEDIA[r.kind](
                 r.file_id,
-                caption=_caption(reporter, r, CAPTION_LIMIT) if (i == 0 or r.text) else None,
+                caption=_caption(reporter, r, CAPTION_LIMIT) if (i == 0 or r.text or r.file_name) else None,
                 parse_mode=ParseMode.HTML,
             )
             for i, r in enumerate(group)
@@ -695,16 +708,16 @@ async def _send_group(bot, chat_id: int, reporter: User, group: list[Report]) ->
         await bot.send_message(chat_id, _caption(reporter, first, TEXT_LIMIT), parse_mode=ParseMode.HTML)
 
 
-def _report_from_message(msg) -> tuple[str, str | None, str | None] | None:
-    """(kind, text, file_id) for a message, or None if it isn't something we save."""
+def _report_from_message(msg) -> tuple[str, str | None, str | None, str | None] | None:
+    """(kind, text, file_id, file_name) for a message, or None if it isn't something we save."""
     # Animations (GIFs) also carry msg.document, so check them before documents.
     for kind, media in [("photo", msg.photo[-1] if msg.photo else None), ("video", msg.video),
                         ("animation", msg.animation), ("document", msg.document), ("audio", msg.audio),
                         ("voice", msg.voice), ("video_note", msg.video_note)]:
         if media:
-            return kind, msg.caption, media.file_id
+            return kind, msg.caption, media.file_id, getattr(media, "file_name", None)
     if msg.text:
-        return "text", msg.text, None
+        return "text", msg.text, None, None
     return None
 
 
@@ -726,8 +739,8 @@ async def receive_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     found = _report_from_message(msg)
     if not found:
         return
-    kind, text, file_id = found
-    report_id = db.add_report(user.telegram_id, kind, text, file_id, msg.media_group_id)
+    kind, text, file_id, file_name = found
+    report_id = db.add_report(user.telegram_id, kind, text, file_id, msg.media_group_id, file_name)
 
     # Every admin is told about every new report.
     _queue_live_delivery(context, user, report_id, msg.media_group_id)
