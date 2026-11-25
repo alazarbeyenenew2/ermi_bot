@@ -46,6 +46,12 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_id, created_at);
 
+-- Small key/value settings, e.g. whether the nightly backup is on.
+CREATE TABLE IF NOT EXISTS settings (
+    key    TEXT PRIMARY KEY,
+    value  TEXT
+);
+
 -- Which admin has read which report. Each admin has their own read state.
 CREATE TABLE IF NOT EXISTS report_reads (
     admin_id   INTEGER NOT NULL,
@@ -365,6 +371,74 @@ class Database:
             args + [limit, offset],
         ).fetchall()
         return [Report(**dict(r)) for r in rows]
+
+    # ---------- deleting ----------
+    def get_report(self, report_id: int) -> Report | None:
+        row = self.conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+        return Report(**dict(row)) if row else None
+
+    def album_report_ids(self, report_id: int) -> list[int]:
+        """The report and every other item of the same album (same sender and media group)."""
+        r = self.get_report(report_id)
+        if not r:
+            return []
+        if not r.media_group_id:
+            return [r.id]
+        rows = self.conn.execute(
+            "SELECT id FROM reports WHERE user_id = ? AND media_group_id = ? ORDER BY id",
+            (r.user_id, r.media_group_id),
+        ).fetchall()
+        return [row["id"] for row in rows]
+
+    def delete_reports(self, report_ids: list[int]) -> int:
+        """Permanently delete reports (and everyone's read marks for them). Returns how many were deleted."""
+        if not report_ids:
+            return 0
+        marks = ",".join("?" * len(report_ids))
+        cur = self.conn.execute(f"DELETE FROM reports WHERE id IN ({marks})", report_ids)
+        self.conn.commit()
+        return cur.rowcount
+
+    def delete_user(self, telegram_id: int) -> int:
+        """Permanently delete a user and all their reports. Returns how many reports were deleted."""
+        if telegram_id in config.SUPER_ADMIN_IDS:
+            raise ValueError("Super admins can't be removed.")
+        cur = self.conn.execute("DELETE FROM reports WHERE user_id = ?", (telegram_id,))
+        self.conn.execute("DELETE FROM report_reads WHERE admin_id = ?", (telegram_id,))
+        self.conn.execute("DELETE FROM users WHERE telegram_id = ?", (telegram_id,))
+        self.conn.commit()
+        return cur.rowcount
+
+    # ---------- settings ----------
+    def get_setting(self, key: str, default: str | None = None) -> str | None:
+        row = self.conn.execute("SELECT value FROM settings WHERE key = ?", (key,)).fetchone()
+        return row["value"] if row else default
+
+    def set_setting(self, key: str, value: str) -> None:
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        self.conn.commit()
+
+    # ---------- backup ----------
+    def copy_to(self, path: str) -> None:
+        """Consistent copy of the whole database file (safe while the bot is running)."""
+        target = sqlite3.connect(path)
+        try:
+            self.conn.backup(target)
+        finally:
+            target.close()
+
+    def export_users(self) -> list[dict]:
+        return [dict(r) for r in self.conn.execute(
+            """SELECT u.*, (SELECT COUNT(*) FROM reports r WHERE r.user_id = u.telegram_id) AS total_reports
+               FROM users u ORDER BY u.created_at""")]
+
+    def export_reports(self) -> list[dict]:
+        return [dict(r) for r in self.conn.execute(
+            """SELECT r.*, u.full_name, u.username
+               FROM reports r LEFT JOIN users u ON u.telegram_id = r.user_id ORDER BY r.created_at, r.id""")]
 
     def today_stats(self, admin_id: int) -> dict:
         start, end = today_range_utc()

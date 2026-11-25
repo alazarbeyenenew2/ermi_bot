@@ -235,3 +235,65 @@ CARD_SELF = "\n\n<i>This is you.</i>"
 CARD_ADMIN_ONLY_SUPER = "\n\n<i>Only super admins can remove or suspend other admins.</i>"
 CARD_REPORTS = "📂 Reports"
 CARD_BACK = "◀️ Back to list"
+
+# ---------- deleting reports (admins) ----------
+DELETE = "🗑 Delete"
+
+
+def delete_album(n: int) -> str:
+    return f"🗑 Delete album ({n})"
+
+
+ALBUM_ABOVE = "⬆️ Album above"
+CONFIRM_DELETE = "⚠️ Yes, delete"
+CANCEL = "✖️ Cancel"
+ALREADY_DELETED = "Already deleted."
+
+
+def reports_deleted(n: int) -> str:
+    return "🗑 Report deleted permanently." if n == 1 else f"🗑 {n} reports deleted permanently."
+
+
+# ---------- removing users (super admins) ----------
+ONLY_SUPER = "🔒 Only super admins can do this."
+REMOVE_USER = "🗑 Remove user"
+REMOVE_USER_YES = "⚠️ Yes, remove permanently"
+
+
+def remove_user_confirm(name: str, reports: int) -> str:
+    return (f"\n\n⚠️ <b>Remove {name} permanently?</b>\n"
+            f"Their {_n(reports, 'report')} will be deleted too. This can't be undone.\n"
+            "<i>If they start the bot again, they'll be a new user waiting for approval.</i>")
+
+
+def user_removed(name: str, reports: int) -> str:
+    return f"🗑 {name} removed ({_n(reports, 'report')} deleted)."
+
+
+# ---------- backup (super admins) ----------
+BTN_BACKUP = "💾 Backup"
+CMD_BACKUP = "Backup"
+BACKUP_NOW = "📦 Back up now"
+NIGHTLY_TURN_ON = "▶️ Turn nightly backup on"
+NIGHTLY_TURN_OFF = "⏸ Turn nightly backup off"
+BACKUP_WORKING = "⏳ Making the backup…"
+NEVER = "never"
+
+
+def backup_menu(nightly_on: bool, next_run: str, last_run: str) -> str:
+    state = f"✅ On · every night at <b>00:00</b> (Ethiopia time)\n⏭ Next: {next_run}" if nightly_on else "⏸ Off"
+    return (
+        f"💾 <b>Backup</b>\n{LINE}\n"
+        f"🌙 Nightly backup: {state}\n"
+        f"🕓 Last backup: {last_run}\n\n"
+        "<i>The backup is a zip with the full database and users / reports spreadsheets, "
+        "sent here to every super admin.</i>"
+    )
+
+
+def backup_caption(when: str, users: int, reports: int, nightly: bool) -> str:
+    kind = "🌙 Nightly backup" if nightly else "💾 Backup"
+    return f"<b>{kind}</b> · {when}\n👥 {_n(users, 'user')} · 📨 {_n(reports, 'report')}"
+
+
+BACKUP_TOO_BIG = "⚠️ The backup is larger than Telegram's 50 MB limit, so it can't be sent here. Copy it from the server."

@@ -35,6 +35,16 @@ Menus (users list, a user's details, report periods) update the same message ins
   - **Any admin** can accept, suspend, activate and make admins.
   - Only **super admins** (`SUPER_ADMIN_IDS`) can remove an admin or suspend one. Nobody can change a super admin or themselves.
 - **🗂 All reports** (or `/reports`): everyone's reports by period, also at the bottom of the users list.
+- **🗑 Delete reports permanently**: every report an admin sees (Read, All reports, a user's reports, new-report alerts) has a **🗑 Delete** button; albums get one **Delete album** button after them. Deleting asks for confirmation, then removes the report from the database for everyone. Users don't get delete buttons.
+
+**Super admins** also get:
+- **🗑 Remove user** on a user's details: after confirmation, the user and all their reports are deleted permanently. If they start the bot again they're a new, pending user. Super admins can't be removed.
+- **💾 Backup** (or `/backup`): a zipped backup is sent to **every super admin every night at 00:00 Ethiopian time** (Africa/Addis_Ababa). The backup menu shows when the next and last backups are, and has **📦 Back up now** (sent to you) and a button to turn the nightly backup off or on (remembered across restarts). The zip contains:
+  - `bot.db`: a full copy of the database (to restore, stop the bot and put it back as the database file),
+  - `users.csv` and `reports.csv`: everything in spreadsheet form (opens in Excel with Amharic intact),
+  - `README.txt`.
+
+  Photos and files stay on Telegram's servers; the backup keeps their file IDs, which the bot can still send with the same bot token. A super admin only receives backups after sending `/start` once. Telegram limits bot uploads to 50 MB; a larger backup has to be copied from the server (the deploy workflow also keeps copies in `backups/`).
 
 **Web admin page** (`http://<server>:8000`):
 - Lists all users with their role, status and report counts. You can search them.
@@ -127,7 +137,8 @@ Push to `main`, or run the workflow from the Actions tab. Stop any other copy of
 | `bot.py` | Telegram handlers (reports, `/read`, `/status`) |
 | `texts_am.py`, `texts_en.py`, `texts.py` | Every text the bot shows in Telegram, in Amharic and English, and the language list |
 | `web.py`, `templates/` | Web admin page |
-| `db.py` | SQLite storage (`users`, `reports`, `report_reads`) |
+| `db.py` | SQLite storage (`users`, `reports`, `report_reads`, `settings`) |
+| `backup.py` | Builds the zipped backup (database copy + CSV exports) |
 | `config.py` | Settings from `.env` |
 | `Dockerfile`, `docker-compose.yml`, `Caddyfile` | Container deployment (optional HTTPS via Caddy) |
 

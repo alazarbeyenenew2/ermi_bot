@@ -5,7 +5,7 @@ Every text shown in Telegram lives in texts_am.py / texts_en.py; each person see
 import asyncio
 import html
 import logging
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from telegram import (
     BotCommand,
@@ -31,6 +31,7 @@ from telegram.ext import (
     filters,
 )
 
+import backup
 import config
 import texts
 from db import Report, User, day_range_utc, db, local_today, to_local
@@ -53,6 +54,9 @@ QUICK_ACTION = "qa:"     # qa:<telegram_id>:<action>:<pos>    (then shows the us
 REPORTS_MENU = "rpm:"    # rpm:<telegram_id>[:e]   0 = all users; ":e" = replace the tapped message
 REPORTS = "rp:"          # rp:<telegram_id>:<period>:<offset>
 SET_LANGUAGE = "lang:"   # lang:<code>
+DELETE_REPORT = "del"    # del:<s|g>:<report_id>, delok:…, delno:…   (s = one report, g = its whole album)
+REMOVE_USER = "rmu"      # rmu:<telegram_id>:<pos> (ask), rmuok:<telegram_id>:<pos> (do it)
+BACKUP = "bk:"           # bk:now, bk:on, bk:off
 
 # Users list filters: letter -> test
 FILTERS = {
@@ -77,6 +81,8 @@ def _commands(user: User) -> list[BotCommand]:
     if user.is_admin:
         commands += [BotCommand("read", L.CMD_READ), BotCommand("status", L.CMD_STATUS),
                      BotCommand("users", L.CMD_USERS), BotCommand("reports", L.CMD_REPORTS)]
+    if user.is_super_admin:
+        commands.append(BotCommand("backup", L.CMD_BACKUP))
     return commands + [BotCommand("language", L.CMD_LANGUAGE)]
 
 
@@ -86,7 +92,10 @@ def main_keyboard(user: User) -> ReplyKeyboardMarkup:
     if user.is_admin and not user.is_suspended:
         rows += [[KeyboardButton(L.BTN_READ), KeyboardButton(L.BTN_STATUS)],
                  [KeyboardButton(L.BTN_USERS), KeyboardButton(L.BTN_ALL)]]
-    rows.append([KeyboardButton(texts.LANGUAGE_BUTTON)])
+    if user.is_super_admin:
+        rows.append([KeyboardButton(L.BTN_BACKUP), KeyboardButton(texts.LANGUAGE_BUTTON)])
+    else:
+        rows.append([KeyboardButton(texts.LANGUAGE_BUTTON)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True,
                                input_field_placeholder=L.KEYBOARD_PLACEHOLDER)
 
@@ -404,11 +413,12 @@ async def reports_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _show(update, context, title, None)
 
     reporters: dict[int, User] = {}
+    deletable = viewer.is_admin and not viewer.is_suspended
     # Oldest first within the page, so albums keep their order.
     for group in _group_albums(list(reversed(page))):
         reporter = reporters.setdefault(group[0].user_id, db.get_user(group[0].user_id))
         try:
-            await _send_group(bot, chat_id, reporter, group, L)
+            await _send_group(bot, chat_id, reporter, group, L, deletable)
         except TelegramError as e:
             log.warning("Could not show reports %s: %s", [r.id for r in group], e)
             await bot.send_message(chat_id, L.could_not_show(html.escape(str(e))))
@@ -531,7 +541,7 @@ async def _render_users(update: Update, context: ContextTypes.DEFAULT_TYPE, admi
 
 
 async def _render_user_card(update: Update, context: ContextTypes.DEFAULT_TYPE, admin: User,
-                            target: User, pos: str) -> None:
+                            target: User, pos: str, confirm_remove: bool = False) -> None:
     L = tr(admin)
     today, total = db.user_report_counts(target.telegram_id)
     role = L.ROLE_SUPER if target.is_super_admin else L.ROLE_ADMIN if target.is_admin else L.ROLE_USER
@@ -548,10 +558,49 @@ async def _render_user_card(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     elif not actions:
         text += L.CARD_ADMIN_ONLY_SUPER
 
+    if confirm_remove:
+        text += L.remove_user_confirm(html.escape(target.display_name), total)
+        kb = [[_button(L.REMOVE_USER_YES, f"{REMOVE_USER}ok:{target.telegram_id}:{pos}")],
+              [_button(L.CANCEL, f"{USER_CARD}{target.telegram_id}:{pos}")]]
+        await _show(update, context, text, InlineKeyboardMarkup(kb))
+        return
+
     kb = _pairs([_button(L.ACTIONS[a][0], f"{USER_ACTION}{target.telegram_id}:{a}:{pos}") for a in actions])
+    if _can_remove(admin, target):
+        kb.append([_button(L.REMOVE_USER, f"{REMOVE_USER}:{target.telegram_id}:{pos}")])
     kb.append([_button(L.CARD_REPORTS, f"{REPORTS_MENU}{target.telegram_id}:e"),
                _button(L.CARD_BACK, f"{USERS_PAGE}{pos}")])
     await _show(update, context, text, InlineKeyboardMarkup(kb))
+
+
+def _can_remove(admin: User, target: User) -> bool:
+    """Only super admins remove users, and never a super admin or themselves."""
+    return (admin.is_super_admin and not admin.is_suspended and not target.is_super_admin
+            and target.telegram_id != admin.telegram_id)
+
+
+async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """rmu:<id>:<pos> asks for confirmation on the user card; rmuok:<id>:<pos> removes the user."""
+    query = update.callback_query
+    kind, target_id, pos = query.data.split(":")
+    admin = _register(update, context)
+    L = tr(admin)
+    target = db.get_user(int(target_id))
+    if not target:
+        await query.answer(L.USER_NOT_FOUND, show_alert=True)
+        await _render_users(update, context, admin, pos)
+        return
+    if not _can_remove(admin, target):
+        await query.answer(L.ONLY_SUPER, show_alert=True)
+        return
+    if kind == REMOVE_USER:
+        await query.answer()
+        await _render_user_card(update, context, admin, target, pos, confirm_remove=True)
+        return
+    deleted = db.delete_user(target.telegram_id)
+    log.info("Super admin %s removed user %s (%s reports)", admin.telegram_id, target.telegram_id, deleted)
+    await query.answer(L.user_removed(target.full_name or str(target.telegram_id), deleted), show_alert=True)
+    await _render_users(update, context, admin, pos)
 
 
 async def user_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -591,6 +640,138 @@ async def user_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _render_user_card(update, context, admin, target, pos)
 
 
+# ---------- admin: delete reports ----------
+async def delete_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """del:… asks to confirm, delno:… puts the 🗑 button back, delok:… deletes permanently."""
+    query = update.callback_query
+    kind, scope, report_id = query.data.split(":")
+    report_id = int(report_id)
+    admin = _register(update, context)
+    L = tr(admin)
+    if not admin.is_admin or admin.is_suspended:
+        await query.answer(L.ONLY_ADMINS, show_alert=True)
+        return
+    ids = db.album_report_ids(report_id) if scope == "g" else ([report_id] if db.get_report(report_id) else [])
+    if not ids:
+        await query.answer(L.ALREADY_DELETED, show_alert=True)
+        try:
+            await query.edit_message_reply_markup(None)
+        except TelegramError:
+            pass
+        return
+    first = db.get_report(ids[0])
+    if kind == DELETE_REPORT:
+        await query.answer()
+        await query.edit_message_reply_markup(InlineKeyboardMarkup([[
+            _button(L.CONFIRM_DELETE, f"{DELETE_REPORT}ok:{scope}:{report_id}"),
+            _button(L.CANCEL, f"{DELETE_REPORT}no:{scope}:{report_id}"),
+        ]]))
+        return
+    if kind == f"{DELETE_REPORT}no":
+        await query.answer()
+        await query.edit_message_reply_markup(_delete_markup(L, first, len(ids) if scope == "g" else 1))
+        return
+    deleted = db.delete_reports(ids)
+    log.info("Admin %s deleted reports %s", admin.telegram_id, ids)
+    await query.answer(L.reports_deleted(deleted))
+    if scope == "s":
+        # Remove the report from this chat too (bots can delete their own messages for 48 hours).
+        try:
+            await query.message.delete()
+            return
+        except TelegramError:
+            pass
+    try:
+        await query.edit_message_reply_markup(None)
+        if scope == "g":
+            await query.edit_message_text(L.reports_deleted(deleted))
+    except TelegramError:
+        pass
+
+
+# ---------- super admin: backup ----------
+NIGHTLY_SETTING = "backup_nightly"   # "on" / "off"
+LAST_BACKUP_SETTING = "last_backup"  # ISO time of the last backup sent
+LAST_NIGHTLY_SETTING = "last_nightly_backup_date"
+
+
+def _backup_menu(user: User) -> tuple[str, InlineKeyboardMarkup]:
+    L = tr(user)
+    nightly_on = db.get_setting(NIGHTLY_SETTING, "on") == "on"
+    last = db.get_setting(LAST_BACKUP_SETTING)
+    last_text = datetime.fromisoformat(last).astimezone(backup.ETHIOPIA).strftime("%d/%m/%Y %H:%M") if last else L.NEVER
+    next_text = backup.next_midnight().strftime("%d/%m/%Y %H:%M")
+    toggle = (_button(L.NIGHTLY_TURN_OFF, f"{BACKUP}off") if nightly_on else _button(L.NIGHTLY_TURN_ON, f"{BACKUP}on"))
+    return (L.backup_menu(nightly_on, next_text, last_text),
+            InlineKeyboardMarkup([[_button(L.BACKUP_NOW, f"{BACKUP}now")], [toggle]]))
+
+
+async def backup_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """💾 button or /backup (super admins only)."""
+    user = _register(update, context)
+    if not user.is_super_admin:
+        await update.message.reply_text(tr(user).ONLY_SUPER)
+        return
+    text, keyboard = _backup_menu(user)
+    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+
+
+async def backup_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """bk:now / bk:on / bk:off from the backup menu."""
+    query = update.callback_query
+    user = _register(update, context)
+    L = tr(user)
+    if not user.is_super_admin:
+        await query.answer(L.ONLY_SUPER, show_alert=True)
+        return
+    action = query.data[len(BACKUP):]
+    await query.answer()
+    if action in ("on", "off"):
+        db.set_setting(NIGHTLY_SETTING, action)
+        log.info("Super admin %s turned nightly backup %s", user.telegram_id, action)
+    else:
+        await _show(update, context, L.BACKUP_WORKING, None)
+        await send_backup(context.application, [user.telegram_id], nightly=False)
+    text, keyboard = _backup_menu(user)
+    await _show(update, context, text, keyboard)
+
+
+async def send_backup(app: Application, recipients, nightly: bool) -> None:
+    """Make one zipped backup and send it to each recipient (in their language)."""
+    data, file_name, counts = await asyncio.to_thread(backup.make_backup)
+    when = backup.now_ethiopia().strftime("%d/%m/%Y %H:%M")
+    for chat_id in recipients:
+        L = tr(db.get_user(chat_id))
+        try:
+            if len(data) > backup.TELEGRAM_UPLOAD_LIMIT:
+                await app.bot.send_message(chat_id, L.BACKUP_TOO_BIG)
+                continue
+            await _retry(lambda: app.bot.send_document(
+                chat_id, document=data, filename=file_name, parse_mode=ParseMode.HTML,
+                caption=L.backup_caption(when, counts["users"], counts["reports"], nightly)))
+        except TelegramError as e:
+            # e.g. a super admin who never pressed /start.
+            log.warning("Could not send backup to %s: %s", chat_id, e)
+    db.set_setting(LAST_BACKUP_SETTING, backup.now_ethiopia().isoformat())
+    log.info("Backup %s sent to %s (%s bytes)", file_name, list(recipients), len(data))
+
+
+async def nightly_backup_loop(app: Application) -> None:
+    """Every night at 00:00 Ethiopian time, send a backup to every super admin (unless turned off)."""
+    while True:
+        wait = (backup.next_midnight() - backup.now_ethiopia()).total_seconds()
+        await asyncio.sleep(max(wait, 1))
+        today = backup.now_ethiopia().date().isoformat()
+        if db.get_setting(NIGHTLY_SETTING, "on") != "on" or db.get_setting(LAST_NIGHTLY_SETTING) == today:
+            continue
+        db.set_setting(LAST_NIGHTLY_SETTING, today)
+        try:
+            await send_backup(app, sorted(config.SUPER_ADMIN_IDS), nightly=True)
+        except Exception:
+            log.exception("Nightly backup failed")
+        await asyncio.sleep(60)  # never fire twice around the same midnight
+
+
 # ---------- admin: read ----------
 async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send the next user's unread reports for today, then mark them read."""
@@ -616,7 +797,7 @@ async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sent_ids: list[int] = []
     for group in _group_albums(reports):
         try:
-            await _send_group(bot, chat_id, reporter, group, L)
+            await _send_group(bot, chat_id, reporter, group, L, deletable=True)
             sent_ids.extend(r.id for r in group)
         except TelegramError as e:
             log.exception("Failed to deliver reports %s", [r.id for r in group])
@@ -665,8 +846,15 @@ def _group_albums(reports: list[Report]) -> list[list[Report]]:
     return groups
 
 
-async def _send_group(bot, chat_id: int, reporter: User, group: list[Report], L) -> None:
-    """Send one report (or one album) to a chat; captions use the recipient's language L."""
+def _delete_markup(L, report: Report, album_size: int = 1) -> InlineKeyboardMarkup:
+    if album_size > 1:
+        return InlineKeyboardMarkup([[_button(L.delete_album(album_size), f"{DELETE_REPORT}:g:{report.id}")]])
+    return InlineKeyboardMarkup([[_button(L.DELETE, f"{DELETE_REPORT}:s:{report.id}")]])
+
+
+async def _send_group(bot, chat_id: int, reporter: User, group: list[Report], L, deletable: bool = False) -> None:
+    """Send one report (or one album) to a chat; captions use the recipient's language L.
+    deletable: add a 🗑 button (for admins)."""
     first = group[0]
     if len(group) > 1:
         media = [
@@ -678,20 +866,26 @@ async def _send_group(bot, chat_id: int, reporter: User, group: list[Report], L)
             for i, r in enumerate(group)
         ]
         await bot.send_media_group(chat_id, media)
+        if deletable:
+            # Albums can't carry buttons, so the delete button comes right after.
+            await bot.send_message(chat_id, L.ALBUM_ABOVE, reply_markup=_delete_markup(L, first, len(group)))
         return
     caption = _caption(reporter, first, CAPTION_LIMIT, L)
+    markup = _delete_markup(L, first) if deletable else None
     senders = {
         "photo": bot.send_photo, "video": bot.send_video, "animation": bot.send_animation,
         "document": bot.send_document, "audio": bot.send_audio, "voice": bot.send_voice,
     }
     if first.kind in senders:
-        await senders[first.kind](chat_id, first.file_id, caption=caption, parse_mode=ParseMode.HTML)
+        await senders[first.kind](chat_id, first.file_id, caption=caption, parse_mode=ParseMode.HTML,
+                                  reply_markup=markup)
     elif first.kind == "video_note":
         # Round videos can't have a caption: say who sent it first.
         await bot.send_message(chat_id, caption, parse_mode=ParseMode.HTML)
-        await bot.send_video_note(chat_id, first.file_id)
+        await bot.send_video_note(chat_id, first.file_id, reply_markup=markup)
     else:
-        await bot.send_message(chat_id, _caption(reporter, first, TEXT_LIMIT, L), parse_mode=ParseMode.HTML)
+        await bot.send_message(chat_id, _caption(reporter, first, TEXT_LIMIT, L), parse_mode=ParseMode.HTML,
+                               reply_markup=markup)
 
 
 def _report_from_message(msg) -> tuple[str, str | None, str | None, str | None] | None:
@@ -804,7 +998,7 @@ async def _deliver_live(app: Application, reporter: User, report_ids: list[int])
         delivered: list[int] = []
         for group in _group_albums(reports):
             try:
-                await _retry(lambda: _send_group(app.bot, admin_id, reporter, group, L))
+                await _retry(lambda: _send_group(app.bot, admin_id, reporter, group, L, deletable=True))
                 delivered.extend(r.id for r in group)
             except TelegramError as e:
                 log.warning("Live delivery of %s to admin %s failed: %s", [r.id for r in group], admin_id, e)
@@ -835,6 +1029,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("users", users, filters=private))
     app.add_handler(CommandHandler("reports", all_reports, filters=private))
     app.add_handler(CommandHandler("language", choose_language, filters=private))
+    app.add_handler(CommandHandler("backup", backup_menu, filters=private))
 
     # Reply keyboard buttons (and their labels from earlier versions). Registered before
     # receive_report so their text isn't saved as a report.
@@ -842,6 +1037,7 @@ def build_application() -> Application:
                           ("BTN_STATUS", status), ("BTN_USERS", users), ("BTN_ALL", all_reports)]:
         app.add_handler(MessageHandler(private & filters.Text(texts.labels(name)), handler))
     app.add_handler(MessageHandler(private & filters.Text([texts.LANGUAGE_BUTTON]), choose_language))
+    app.add_handler(MessageHandler(private & filters.Text(texts.labels("BTN_BACKUP")), backup_menu))
 
     pos = r"[apcs]?\d+"  # users-list position; a bare number comes from older buttons
     app.add_handler(CallbackQueryHandler(read, pattern=f"^({READ_NEXT}|{OLD_MENU_READ})$"))
@@ -852,6 +1048,9 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(reports_menu, pattern=rf"^({REPORTS_MENU}\d+(:e)?|rep:\d+:\d{{8}})$"))
     app.add_handler(CallbackQueryHandler(reports_page, pattern=rf"^{REPORTS}\d+:[twma]:\d+$"))
     app.add_handler(CallbackQueryHandler(set_language, pattern=rf"^{SET_LANGUAGE}[a-z]+$"))
+    app.add_handler(CallbackQueryHandler(delete_report, pattern=rf"^{DELETE_REPORT}(ok|no)?:[sg]:\d+$"))
+    app.add_handler(CallbackQueryHandler(remove_user, pattern=rf"^{REMOVE_USER}(ok)?:\d+:{pos}$"))
+    app.add_handler(CallbackQueryHandler(backup_action, pattern=rf"^{BACKUP}(now|on|off)$"))
     app.add_handler(
         MessageHandler(
             private & (filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL

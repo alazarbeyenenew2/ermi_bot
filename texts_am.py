@@ -228,3 +228,66 @@ CARD_SELF = "\n\n<i>ይህ እርስዎ ነዎት።</i>"
 CARD_ADMIN_ONLY_SUPER = "\n\n<i>ሌላ አስተዳዳሪን ማንሳት ወይም ማገድ የሚችሉት ዋና አስተዳዳሪዎች ብቻ ናቸው።</i>"
 CARD_REPORTS = "📂 ሪፖርቶች"
 CARD_BACK = "◀️ ወደ ዝርዝሩ"
+
+# ---------- deleting reports (admins) ----------
+DELETE = "🗑 ሰርዝ"
+
+
+def delete_album(n: int) -> str:
+    return f"🗑 አልበሙን ሰርዝ ({n})"
+
+
+ALBUM_ABOVE = "⬆️ ከላይ ያለው አልበም"
+CONFIRM_DELETE = "⚠️ አዎ፣ ሰርዝ"
+CANCEL = "✖️ ተው"
+ALREADY_DELETED = "ቀደም ብሎ ተሰርዟል።"
+
+
+def reports_deleted(n: int) -> str:
+    return "🗑 ሪፖርቱ ሙሉ በሙሉ ተሰርዟል።" if n == 1 else f"🗑 {n} ሪፖርቶች ሙሉ በሙሉ ተሰርዘዋል።"
+
+
+# ---------- removing users (super admins) ----------
+ONLY_SUPER = "🔒 ይህን ማድረግ የሚችሉት ዋና አስተዳዳሪዎች ብቻ ናቸው።"
+REMOVE_USER = "🗑 ተጠቃሚውን አስወግድ"
+REMOVE_USER_YES = "⚠️ አዎ፣ ሙሉ በሙሉ አስወግድ"
+
+
+def remove_user_confirm(name: str, reports: int) -> str:
+    return (f"\n\n⚠️ <b>{name}</b> ሙሉ በሙሉ ይወገድ?\n"
+            f"የላኳቸው {reports} ሪፖርቶችም ይሰረዛሉ። ይህ ሊመለስ አይችልም።\n"
+            "<i>ቦቱን እንደገና ከጀመሩ ፈቃድ የሚጠብቅ አዲስ ተጠቃሚ ይሆናሉ።</i>")
+
+
+def user_removed(name: str, reports: int) -> str:
+    return f"🗑 {name} ተወግዷል ({reports} ሪፖርቶች ተሰርዘዋል)።"
+
+
+# ---------- backup (super admins) ----------
+BTN_BACKUP = "💾 ምትኬ"
+CMD_BACKUP = "ምትኬ (backup)"
+BACKUP_NOW = "📦 አሁን ምትኬ ውሰድ"
+NIGHTLY_TURN_ON = "▶️ የማታ ምትኬን አብራ"
+NIGHTLY_TURN_OFF = "⏸ የማታ ምትኬን አጥፋ"
+BACKUP_WORKING = "⏳ ምትኬ እየተዘጋጀ ነው…"
+NEVER = "ገና አልተወሰደም"
+
+
+def backup_menu(nightly_on: bool, next_run: str, last_run: str) -> str:
+    state = (f"✅ በርቷል · በየቀኑ እኩለ ሌሊት <b>00:00</b> (የኢትዮጵያ ሰዓት)\n⏭ ቀጣዩ፦ {next_run}"
+             if nightly_on else "⏸ ጠፍቷል")
+    return (
+        f"💾 <b>ምትኬ (Backup)</b>\n{LINE}\n"
+        f"🌙 የማታ ምትኬ፦ {state}\n"
+        f"🕓 የመጨረሻው ምትኬ፦ {last_run}\n\n"
+        "<i>ምትኬው ሙሉ የመረጃ ቋቱን እና የተጠቃሚዎች / የሪፖርቶች ሰንጠረዦችን የያዘ zip ፋይል ነው፤ "
+        "ለሁሉም ዋና አስተዳዳሪዎች እዚሁ ይላካል።</i>"
+    )
+
+
+def backup_caption(when: str, users: int, reports: int, nightly: bool) -> str:
+    kind = "🌙 የማታ ምትኬ" if nightly else "💾 ምትኬ"
+    return f"<b>{kind}</b> · {when}\n👥 {users} ተጠቃሚዎች · 📨 {reports} ሪፖርቶች"
+
+
+BACKUP_TOO_BIG = "⚠️ ምትኬው ከቴሌግራም 50 MB ገደብ በላይ ስለሆነ እዚህ መላክ አይቻልም። ከሰርቨሩ ይቅዱት።"
