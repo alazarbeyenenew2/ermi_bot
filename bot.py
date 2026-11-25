@@ -690,7 +690,7 @@ async def user_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         return
     _, target_id, pos = update.callback_query.data.split(":")
     target = db.get_user(int(target_id))
-    if not target:
+    if not target or target.is_super_admin:  # super admins are hidden
         await context.bot.send_message(update.effective_chat.id, tr(admin).USER_NOT_FOUND)
         return
     await _render_user_card(update, context, admin, target, pos)

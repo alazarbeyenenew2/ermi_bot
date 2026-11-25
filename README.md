@@ -39,7 +39,7 @@ Menus (users list, a user's details, report periods) update the same message ins
 
   A user's details have **Accept**, **Make admin / Remove admin**, **Make manager / Remove manager**, **Suspend / Activate** and **📂 Reports**. The user gets a Telegram message about any change and their keyboard updates.
   - **Any admin** can accept, suspend, activate, make admins and make or remove managers.
-  - Only **super admins** (`SUPER_ADMIN_IDS`) can remove an admin or suspend one. Nobody can change a super admin or themselves.
+  - Only **super admins** (`SUPER_ADMIN_IDS`) can remove an admin or suspend one. Nobody can change a super admin or themselves. Super admins are **hidden**: they don't appear in the 👥 Users list, its counts or the web admin.
 - **🗂 All reports** (or `/reports`): everyone's reports by period, also at the bottom of the users list.
 
 **Managers** (📋) are made by an admin or super admin from a user's details. A manager can **read reports** (📥 Read reports, 📊 Summary, 🗂 All reports, a user's reports) and **gets the new-report and edited-report alerts**, but can't manage users: no 👥 Users screen, no accepting, suspending or changing roles, no new-user alerts and no backups. Managers can still send their own reports.

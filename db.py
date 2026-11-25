@@ -266,7 +266,7 @@ class Database:
         return _user(row) if row else None
 
     def list_users(self, search: str = "") -> list[dict]:
-        """All users plus their report counts (today and total)."""
+        """All users plus their report counts (today and total). Super admins are hidden."""
         start, end = today_range_utc()
         like = f"%{search.strip()}%"
         rows = self.conn.execute(
@@ -287,6 +287,7 @@ class Database:
         return [
             {"user": _user(r), "total_reports": r["total_reports"], "today_reports": r["today_reports"]}
             for r in rows
+            if r["telegram_id"] not in config.SUPER_ADMIN_IDS
         ]
 
     def set_role(self, telegram_id: int, role: str) -> None:
