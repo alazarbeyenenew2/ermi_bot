@@ -12,6 +12,8 @@ A Telegram bot where users send reports (text and images), and admins read each 
 - **Live reports**: every new report is sent to all active admins the moment it arrives, marked "🆕 New report". Albums arrive together as one album. A report delivered this way counts as read, so `/read` only shows reports you missed, for example ones that arrived while you had blocked the bot. Set `LIVE_MARKS_READ=false` to have `/read` show everything anyway, or `LIVE_REPORTS=false` to turn live delivery off.
 - `/read`: shows all of **today's** unread reports from the **next user**, then marks them as read. Tap **Next user ▶** to keep going until you get *"You have read all of today's reports."* Each admin has their own read state.
 - `/status`: today's totals and which users still have unread reports.
+- `/users`: every user with their role, status and report counts (today / total), 20 per page with ◀ ▶ buttons.
+- **Inline menu**: `/start` and every admin reply end with **📖 Read**, **📊 Status** and **👥 Users** buttons, so admins can work without typing commands. (Admins who started the bot earlier send `/start` once to get `/users` in their command menu.)
 
 **Web admin page** (`http://<server>:8000`):
 - Lists all users with their role, status and report counts. You can search them.

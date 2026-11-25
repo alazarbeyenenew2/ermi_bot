@@ -30,6 +30,10 @@ log = logging.getLogger(__name__)
 CAPTION_LIMIT = 1024
 TEXT_LIMIT = 4096
 READ_NEXT = "read_next"
+MENU_READ = "menu:read"
+MENU_STATUS = "menu:status"
+USERS_PAGE = "users:"  # + page number
+USERS_PER_PAGE = 20
 
 USER_COMMANDS = [
     BotCommand("start", "Start / help"),
@@ -37,7 +41,16 @@ USER_COMMANDS = [
 ADMIN_COMMANDS = USER_COMMANDS + [
     BotCommand("read", "Read today's reports (next user)"),
     BotCommand("status", "Today's report summary"),
+    BotCommand("users", "List users"),
 ]
+
+
+def admin_menu() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("📖 Read", callback_data=MENU_READ),
+        InlineKeyboardButton("📊 Status", callback_data=MENU_STATUS),
+        InlineKeyboardButton("👥 Users", callback_data=f"{USERS_PAGE}0"),
+    ]])
 
 
 # ---------- helpers ----------
@@ -64,6 +77,26 @@ def _caption(user: User, report: Report, limit: int) -> str:
         if len(text) <= limit:
             return text
         raw = _truncate(raw, max(1, len(raw) - (len(text) - limit) - 1))
+
+
+async def _admin_from_update(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                             clear_buttons: bool = True) -> User | None:
+    """Register the caller; answer the button tap if any. Returns the admin, or None (after
+    telling the caller) if they're not an active admin."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+        if clear_buttons:
+            # Remove the buttons from the tapped message so old menus can't be pressed twice.
+            try:
+                await query.edit_message_reply_markup(None)
+            except TelegramError:
+                pass
+    user = _register(update)
+    if not user.is_admin or user.is_suspended:
+        await context.bot.send_message(update.effective_chat.id, "This command is only for admins.")
+        return None
+    return user
 
 
 async def set_commands_for(app: Application, user: User) -> None:
@@ -100,16 +133,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if user.is_admin:
         text += (
             "\n\n🛡 <b>You are an admin.</b>\n"
-            "/read – read today's reports, one user at a time\n"
-            "/status – summary of today's reports"
+            "📖 <b>Read</b> – read today's reports, one user at a time (/read)\n"
+            "📊 <b>Status</b> – summary of today's reports (/status)\n"
+            "👥 <b>Users</b> – list all users (/users)"
         )
+        await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=admin_menu())
+        return
     await update.message.reply_text(text, parse_mode=ParseMode.HTML)
 
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = _register(update)
-    if not user.is_admin or user.is_suspended:
-        await update.message.reply_text("This command is only for admins.")
+    user = await _admin_from_update(update, context)
+    if not user:
         return
     s = db.today_stats(user.telegram_id)
     pending = db.unread_users_today(user.telegram_id)
@@ -122,31 +157,72 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         text += "\n\n" + "\n".join(f"• {html.escape(u.display_name)} – {n}" for u, n in pending[:30])
         if len(pending) > 30:
             text += f"\n…and {len(pending) - 30} more"
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML)
+    await context.bot.send_message(
+        update.effective_chat.id, text, parse_mode=ParseMode.HTML, reply_markup=admin_menu()
+    )
+
+
+async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """List all users, USERS_PER_PAGE at a time. Paging edits the same message."""
+    query = update.callback_query
+    admin = await _admin_from_update(update, context, clear_buttons=False)
+    if not admin:
+        return
+    page = int(query.data[len(USERS_PAGE):]) if query else 0
+
+    rows = db.list_users()
+    pages = max(1, -(-len(rows) // USERS_PER_PAGE))
+    page = min(max(page, 0), pages - 1)
+    chunk = rows[page * USERS_PER_PAGE:(page + 1) * USERS_PER_PAGE]
+
+    admins = sum(1 for r in rows if r["user"].is_admin)
+    suspended = sum(1 for r in rows if r["user"].is_suspended)
+    lines = [f"👥 <b>Users</b>: {len(rows)} ({admins} admin, {suspended} suspended)"]
+    if pages > 1:
+        lines[0] += f" · page {page + 1}/{pages}"
+    for r in chunk:
+        u: User = r["user"]
+        badge = "⭐" if u.is_super_admin else "🛡" if u.is_admin else "⛔" if u.is_suspended else "👤"
+        if u.is_admin and u.is_suspended:
+            badge += "⛔"
+        lines.append(
+            f"{badge} {html.escape(u.display_name)} · <code>{u.telegram_id}</code>\n"
+            f"      today {r['today_reports']} · total {r['total_reports']}"
+        )
+    if not chunk:
+        lines.append("No users yet.")
+    lines.append("\n⭐ super admin · 🛡 admin · 👤 user · ⛔ suspended")
+    text = "\n".join(lines)
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"{USERS_PAGE}{page - 1}"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton("Next ▶", callback_data=f"{USERS_PAGE}{page + 1}"))
+    keyboard = InlineKeyboardMarkup(([nav] if nav else []) + list(admin_menu().inline_keyboard))
+
+    if query:
+        try:
+            await query.edit_message_text(text, parse_mode=ParseMode.HTML, reply_markup=keyboard)
+            return
+        except TelegramError:
+            # e.g. the tapped message was a photo, or the text didn't change: send a new one.
+            pass
+    await context.bot.send_message(update.effective_chat.id, text, parse_mode=ParseMode.HTML,
+                                   reply_markup=keyboard)
 
 
 async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send the next user's unread reports for today, then mark them read."""
-    query = update.callback_query
-    if query:
-        await query.answer()
-        # Remove the "Next" button from the message that was tapped.
-        try:
-            await query.edit_message_reply_markup(None)
-        except TelegramError:
-            pass
-
-    admin = _register(update)
+    admin = await _admin_from_update(update, context)
+    if not admin:
+        return
     chat_id = update.effective_chat.id
     bot = context.bot
 
-    if not admin.is_admin or admin.is_suspended:
-        await bot.send_message(chat_id, "This command is only for admins.")
-        return
-
     pending = db.unread_users_today(admin.telegram_id)
     if not pending:
-        await bot.send_message(chat_id, "✅ You have read all of today's reports.")
+        await bot.send_message(chat_id, "✅ You have read all of today's reports.", reply_markup=admin_menu())
         return
 
     reporter, _ = pending[0]
@@ -174,12 +250,14 @@ async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if remaining_users:
         keyboard = InlineKeyboardMarkup(
             [[InlineKeyboardButton(f"Next user ▶ ({remaining_users} left)", callback_data=READ_NEXT)]]
+            + list(admin_menu().inline_keyboard)
         )
         await bot.send_message(
             chat_id, f"{remaining_users} more user(s) with unread reports.", reply_markup=keyboard
         )
     else:
-        await bot.send_message(chat_id, "✅ That was the last one — all of today's reports are read.")
+        await bot.send_message(chat_id, "✅ That was the last one — all of today's reports are read.",
+                               reply_markup=admin_menu())
 
 
 def _group_albums(reports: list[Report]) -> list[list[Report]]:
@@ -317,7 +395,10 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("help", start, filters=private))
     app.add_handler(CommandHandler("read", read, filters=private))
     app.add_handler(CommandHandler("status", status, filters=private))
-    app.add_handler(CallbackQueryHandler(read, pattern=f"^{READ_NEXT}$"))
+    app.add_handler(CommandHandler("users", users, filters=private))
+    app.add_handler(CallbackQueryHandler(read, pattern=f"^({READ_NEXT}|{MENU_READ})$"))
+    app.add_handler(CallbackQueryHandler(status, pattern=f"^{MENU_STATUS}$"))
+    app.add_handler(CallbackQueryHandler(users, pattern=f"^{USERS_PAGE}\\d+$"))
     app.add_handler(
         MessageHandler(
             private & (filters.PHOTO | filters.Document.IMAGE | (filters.TEXT & ~filters.COMMAND)),
