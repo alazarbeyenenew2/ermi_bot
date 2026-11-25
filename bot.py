@@ -83,6 +83,9 @@ def _commands(user: User) -> list[BotCommand]:
     if user.is_admin:
         commands += [BotCommand("read", L.CMD_READ), BotCommand("status", L.CMD_STATUS),
                      BotCommand("users", L.CMD_USERS), BotCommand("reports", L.CMD_REPORTS)]
+    elif user.is_manager:
+        commands += [BotCommand("read", L.CMD_READ), BotCommand("status", L.CMD_STATUS),
+                     BotCommand("reports", L.CMD_REPORTS)]
     if user.is_super_admin:
         commands.append(BotCommand("backup", L.CMD_BACKUP))
     return commands + [BotCommand("language", L.CMD_LANGUAGE)]
@@ -94,6 +97,8 @@ def main_keyboard(user: User) -> ReplyKeyboardMarkup:
     if user.is_admin and not user.is_suspended:
         rows += [[KeyboardButton(L.BTN_READ), KeyboardButton(L.BTN_STATUS)],
                  [KeyboardButton(L.BTN_USERS), KeyboardButton(L.BTN_ALL)]]
+    elif user.can_view_reports:  # managers: reports, but no user management
+        rows += [[KeyboardButton(L.BTN_READ), KeyboardButton(L.BTN_STATUS)], [KeyboardButton(L.BTN_ALL)]]
     if user.is_super_admin:
         rows.append([KeyboardButton(L.BTN_BACKUP), KeyboardButton(texts.LANGUAGE_BUTTON)])
     else:
@@ -189,6 +194,18 @@ async def _admin_from_update(update: Update, context: ContextTypes.DEFAULT_TYPE,
     return user
 
 
+async def _viewer_from_update(update: Update, context: ContextTypes.DEFAULT_TYPE,
+                              clear_buttons: bool = True) -> User | None:
+    """Like _admin_from_update, but managers are allowed too (reading reports)."""
+    await _answer_tap(update, clear_buttons)
+    user = _register(update, context)
+    if not user.can_view_reports:
+        await context.bot.send_message(update.effective_chat.id, tr(user).ONLY_ADMINS,
+                                       reply_markup=main_keyboard(user))
+        return None
+    return user
+
+
 async def _show(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str,
                 keyboard: InlineKeyboardMarkup | None) -> None:
     """Replace the tapped message (keeps the chat tidy), or send a new one."""
@@ -239,6 +256,11 @@ def change_user(telegram_id: int, action: str) -> User:
         db.set_approved(telegram_id, True)
     elif action == "remove_admin":
         db.set_role(telegram_id, "user")
+    elif action == "make_manager":
+        db.set_role(telegram_id, "manager")
+        db.set_approved(telegram_id, True)
+    elif action == "remove_manager":
+        db.set_role(telegram_id, "user")
     elif action == "block":
         db.set_suspended(telegram_id, True)
     elif action == "unblock":
@@ -269,7 +291,7 @@ async def _welcome(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user: User,
     elif user.is_pending:
         text += L.PENDING
     else:
-        text += L.WELCOME_USER + (L.WELCOME_ADMIN if user.is_admin else "")
+        text += L.WELCOME_USER + (L.WELCOME_ADMIN if user.is_admin else L.WELCOME_MANAGER if user.is_manager else "")
     await context.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
 
 
@@ -328,7 +350,7 @@ def _period_rows(L, target_id: int, current: str | None = None) -> list[list[Inl
 def _can_view(viewer: User, target_id: int) -> bool:
     if target_id == viewer.telegram_id:
         return True
-    return viewer.is_admin and not viewer.is_suspended
+    return viewer.can_view_reports
 
 
 def _reports_title(viewer: User, target_id: int) -> str:
@@ -342,8 +364,8 @@ def _reports_title(viewer: User, target_id: int) -> str:
 
 
 def _back_from_reports(viewer: User, target_id: int) -> list[list[InlineKeyboardButton]]:
-    """A back button for reports reached from the users screens."""
-    if target_id == viewer.telegram_id:
+    """A back button for reports reached from the users screens (admins only; managers have no users screens)."""
+    if target_id == viewer.telegram_id or not viewer.is_admin:
         return []
     L = tr(viewer)
     if target_id == 0:
@@ -372,9 +394,9 @@ async def my_reports(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
 
 
 async def all_reports(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    admin = await _admin_from_update(update, context)
-    if admin:
-        await _reports_menu(update, context, admin, 0, in_place=False)
+    viewer = await _viewer_from_update(update, context)
+    if viewer:
+        await _reports_menu(update, context, viewer, 0, in_place=False)
 
 
 async def reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -437,13 +459,14 @@ async def reports_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 # ---------- admin: status ----------
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    user = await _admin_from_update(update, context)
+    user = await _viewer_from_update(update, context)
     if not user:
         return
     L = tr(user)
     s = db.today_stats(user.telegram_id)
     pending = db.unread_users_today(user.telegram_id)
-    waiting = sum(1 for r in db.list_users() if r["user"].is_pending)
+    # Only admins can accept people, so only they hear about who's waiting.
+    waiting = sum(1 for r in db.list_users() if r["user"].is_pending) if user.is_admin else 0
     text = L.status(s["total"], s["reporters"], s["unread"], len(pending), waiting)
     if pending:
         text += L.STATUS_UNREAD_TITLE + "\n" + "\n".join(
@@ -457,8 +480,21 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 # ---------- admin: users ----------
 def _badge(u: User) -> str:
-    badge = "⭐" if u.is_super_admin else "🛡" if u.is_admin else "⏳" if u.is_pending else "👤"
+    badge = ("⭐" if u.is_super_admin else "🛡" if u.is_admin else "📋" if u.is_manager
+             else "⏳" if u.is_pending else "👤")
     return badge + ("⛔" if u.is_suspended else "")
+
+
+# Users-list sections, in display order.
+SECTION_ORDER = ("pending", "admins", "managers", "users", "suspended")
+
+
+def _section(u: User) -> str:
+    if u.is_suspended:
+        return "suspended"
+    if u.is_pending:
+        return "pending"
+    return "admins" if u.is_admin else "managers" if u.is_manager else "users"
 
 
 def _parse_pos(token: str) -> tuple[str, int]:
@@ -469,8 +505,8 @@ def _parse_pos(token: str) -> tuple[str, int]:
 
 
 def _allowed_actions(admin: User, target: User) -> list[str]:
-    """Any admin can accept, suspend / activate and make admin. Only super admins can remove an
-    admin or suspend one. Nobody can change a super admin or themselves."""
+    """Any admin can accept, suspend / activate, make admins and make / remove managers.
+    Only super admins can remove an admin or suspend one. Nobody can change a super admin or themselves."""
     if target.is_super_admin or target.telegram_id == admin.telegram_id:
         return []
     actions = []
@@ -481,20 +517,26 @@ def _allowed_actions(admin: User, target: User) -> list[str]:
             actions.append("remove_admin")
     elif not target.is_suspended:
         actions.append("make_admin")
+        actions.append("remove_manager" if target.role == "manager" else "make_manager")
     if not target.is_admin or admin.is_super_admin:
         actions.append("unblock" if target.is_suspended else "block")
     return actions
 
 
-def _quick_action(admin: User, target: User) -> str | None:
-    """The one action shown next to a user in the list."""
-    allowed = _allowed_actions(admin, target)
-    return next((a for a in ("approve", "unblock", "block") if a in allowed), None)
+NOOP = "noop"  # an empty button that keeps rows lined up
+
+
+def _blank() -> InlineKeyboardButton:
+    return _button(" ", NOOP)
+
+
+async def noop(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    await update.callback_query.answer()
 
 
 async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """List users (filtered: all / pending / active / suspended), USERS_PER_PAGE at a time.
-    Each row: the user (opens their card), 📂 their reports, and a quick Accept / Suspend / Activate."""
+    """Users list: grouped into sections (pending, admins, managers, users, suspended), filter tabs,
+    USERS_PER_PAGE per page. Every row has the same buttons for the current tab, so the list lines up."""
     query = update.callback_query
     admin = await _admin_from_update(update, context, clear_buttons=False)
     if not admin:
@@ -502,44 +544,62 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await _render_users(update, context, admin, query.data[len(USERS_PAGE):] if query else "a0")
 
 
+def _row_buttons(L, admin: User, u: User, flt: str, pos: str) -> list[InlineKeyboardButton]:
+    """The buttons after a user's name: the same shape for every row of a tab."""
+    def act(action: str, label: str) -> InlineKeyboardButton:
+        if action in _allowed_actions(admin, u):
+            return _button(label, f"{QUICK_ACTION}{u.telegram_id}:{action}:{pos}")
+        return _blank()
+    reports = _button("📂", f"{REPORTS_MENU}{u.telegram_id}:e")
+    if flt == "p":
+        return [act("approve", "✅"), act("block", "⛔")]
+    if flt == "s":
+        return [act("unblock", "▶️"), reports]
+    return [reports]
+
+
 async def _render_users(update: Update, context: ContextTypes.DEFAULT_TYPE, admin: User, pos: str) -> None:
     L = tr(admin)
     flt, page = _parse_pos(pos)
     everyone = db.list_users()
-    rows = [r for r in everyone if FILTERS[flt](r["user"])]
+    rows = sorted((r for r in everyone if FILTERS[flt](r["user"])),
+                  key=lambda r: (SECTION_ORDER.index(_section(r["user"])),
+                                 not r["user"].is_super_admin, (r["user"].full_name or "").casefold()))
     pages = max(1, -(-len(rows) // USERS_PER_PAGE))
     page = min(max(page, 0), pages - 1)
     pos = f"{flt}{page}"
     first = page * USERS_PER_PAGE
     chunk = rows[first:first + USERS_PER_PAGE]
 
+    # Text: a header, then each section with its numbered users.
     lines = [L.users_title(L.FILTERS[flt], len(rows), page + 1, pages)]
-    lines += [L.users_row(first + i + 1, _badge(r["user"]), html.escape(r["user"].display_name),
-                          r["today_reports"], r["total_reports"])
-              for i, r in enumerate(chunk)] or [L.USERS_EMPTY]
-    lines.append(L.USERS_LEGEND)
+    section = None
+    for i, r in enumerate(chunk):
+        u = r["user"]
+        if _section(u) != section:
+            section = _section(u)
+            lines.append(("\n" if i else "") + L.SECTIONS[section])
+        name = ("⭐ " if u.is_super_admin else "") + html.escape(_truncate(u.display_name, 30))
+        lines.append(L.users_row(first + i + 1, name, r["today_reports"], r["total_reports"]))
+    if not chunk:
+        lines.append(L.USERS_EMPTY)
+    lines.append(L.USERS_LEGEND + "\n<i>" + L.USERS_HINT[flt] + "</i>")
 
+    # Buttons: filter tabs (2 x 2), one uniform row per user, a pager, everyone's reports.
     counts = {f: sum(1 for r in everyone if test(r["user"])) for f, test in FILTERS.items()}
-    kb = _pairs([_button(("• " if f == flt else "") + f"{L.FILTERS[f]} ({counts[f]})", f"{USERS_PAGE}{f}0")
+    kb = _pairs([_button(("• " if f == flt else "") + f"{L.FILTERS[f]} {counts[f]}", f"{USERS_PAGE}{f}0")
                  for f in FILTERS])
     for i, r in enumerate(chunk):
         u = r["user"]
-        row = [
-            _button(f"{first + i + 1}. {_badge(u)} {_truncate(u.full_name or str(u.telegram_id), 16)}",
-                    f"{USER_CARD}{u.telegram_id}:{pos}"),
-            _button("📂", f"{REPORTS_MENU}{u.telegram_id}:e"),
-        ]
-        action = _quick_action(admin, u)
-        if action:
-            row.append(_button(L.ACTIONS[action][0], f"{QUICK_ACTION}{u.telegram_id}:{action}:{pos}"))
-        kb.append(row)
-    nav = []
-    if page > 0:
-        nav.append(_button(L.PREV, f"{USERS_PAGE}{flt}{page - 1}"))
-    if page < pages - 1:
-        nav.append(_button(L.NEXT, f"{USERS_PAGE}{flt}{page + 1}"))
-    if nav:
-        kb.append(nav)
+        name = _button(f"{first + i + 1}. {_badge(u)} {_truncate(u.full_name or str(u.telegram_id), 18)}",
+                       f"{USER_CARD}{u.telegram_id}:{pos}")
+        kb.append([name] + _row_buttons(L, admin, u, flt, pos))
+    if pages > 1:
+        kb.append([
+            _button(L.PREV, f"{USERS_PAGE}{flt}{page - 1}") if page > 0 else _blank(),
+            _button(L.page_label(page + 1, pages), NOOP),
+            _button(L.NEXT, f"{USERS_PAGE}{flt}{page + 1}") if page < pages - 1 else _blank(),
+        ])
     kb.append([_button(L.ALL_USERS_REPORTS, f"{REPORTS_MENU}0:e")])
     await _show(update, context, "\n".join(lines), InlineKeyboardMarkup(kb))
 
@@ -548,7 +608,8 @@ async def _render_user_card(update: Update, context: ContextTypes.DEFAULT_TYPE, 
                             target: User, pos: str, confirm_remove: bool = False) -> None:
     L = tr(admin)
     today, total = db.user_report_counts(target.telegram_id)
-    role = L.ROLE_SUPER if target.is_super_admin else L.ROLE_ADMIN if target.is_admin else L.ROLE_USER
+    role = (L.ROLE_SUPER if target.is_super_admin else L.ROLE_ADMIN if target.is_admin
+            else L.ROLE_MANAGER if target.is_manager else L.ROLE_USER)
     state = L.STATE_SUSPENDED if target.is_suspended else L.STATE_PENDING if target.is_pending else L.STATE_ACTIVE
     text = L.user_card(
         html.escape(target.display_name), target.telegram_id, role, state, today, total,
@@ -778,8 +839,8 @@ async def nightly_backup_loop(app: Application) -> None:
 
 # ---------- admin: read ----------
 async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Send the next user's unread reports for today, then mark them read."""
-    admin = await _admin_from_update(update, context)
+    """Send the next user's unread reports for today, then mark them read (admins and managers)."""
+    admin = await _viewer_from_update(update, context)
     if not admin:
         return
     L = tr(admin)
@@ -801,7 +862,7 @@ async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sent_ids: list[int] = []
     for group in _group_albums(reports):
         try:
-            await _send_group(bot, chat_id, reporter, group, L, deletable=True)
+            await _send_group(bot, chat_id, reporter, group, L, deletable=admin.is_admin)
             sent_ids.extend(r.id for r in group)
         except TelegramError as e:
             log.exception("Failed to deliver reports %s", [r.id for r in group])
@@ -1068,14 +1129,15 @@ async def _deliver_live(app: Application, reporter: User, report_ids: list[int],
     reports = db.get_reports(report_ids)
     if not reports:
         return
-    for admin_id in db.active_admin_ids():
+    for admin_id in db.report_viewer_ids():  # admins and managers
         if admin_id == reporter.telegram_id:
             continue
-        L = tr(db.get_user(admin_id))
-        keyboard = InlineKeyboardMarkup([[
-            _button(L.ALERT_THEIR_REPORTS, f"{REPORTS_MENU}{reporter.telegram_id}"),
-            _button(L.ALERT_USER, f"{USER_CARD}{reporter.telegram_id}:a0"),
-        ]])
+        recipient = db.get_user(admin_id)
+        L = tr(recipient)
+        buttons = [_button(L.ALERT_THEIR_REPORTS, f"{REPORTS_MENU}{reporter.telegram_id}")]
+        if recipient.is_admin:
+            buttons.append(_button(L.ALERT_USER, f"{USER_CARD}{reporter.telegram_id}:a0"))
+        keyboard = InlineKeyboardMarkup([buttons])
         header = (L.edited_alert(html.escape(reporter.display_name)) if edited
                   else L.new_report_alert(html.escape(reporter.display_name), len(reports)))
         try:
@@ -1088,7 +1150,8 @@ async def _deliver_live(app: Application, reporter: User, report_ids: list[int],
         delivered: list[int] = []
         for group in _group_albums(reports):
             try:
-                await _retry(lambda: _send_group(app.bot, admin_id, reporter, group, L, deletable=True))
+                await _retry(lambda: _send_group(app.bot, admin_id, reporter, group, L,
+                                                 deletable=recipient.is_admin))
                 delivered.extend(r.id for r in group)
             except TelegramError as e:
                 log.warning("Live delivery of %s to admin %s failed: %s", [r.id for r in group], admin_id, e)
@@ -1143,6 +1206,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(remove_user, pattern=rf"^{REMOVE_USER}(ok)?:\d+:{pos}$"))
     app.add_handler(CallbackQueryHandler(backup_action, pattern=rf"^{BACKUP}(now|on|off)$"))
     app.add_handler(CallbackQueryHandler(edit_report, pattern=rf"^{EDIT_REPORT}(no)?:\d+$"))
+    app.add_handler(CallbackQueryHandler(noop, pattern=f"^{NOOP}$"))
     app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.UpdateType.EDITED_MESSAGE, on_edited_message))
     app.add_handler(
         MessageHandler(

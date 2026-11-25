@@ -31,19 +31,31 @@ def _reports_table(name: str) -> str:
     return REPORTS_TABLE.format(name=name, kinds=", ".join(f"'{k}'" for k in REPORT_KINDS))
 
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS users (
+# user: sends reports. manager: also reads every report and gets new-report alerts, but can't manage
+# users. admin: everything. (Super admins are admins listed in SUPER_ADMIN_IDS.)
+ROLES = ("user", "manager", "admin")
+
+USERS_TABLE = """
+CREATE TABLE IF NOT EXISTS {name} (
     telegram_id   INTEGER PRIMARY KEY,
     username      TEXT,
     full_name     TEXT,
-    role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ('user', 'admin')),
+    role          TEXT NOT NULL DEFAULT 'user' CHECK (role IN ({roles})),
     is_suspended  INTEGER NOT NULL DEFAULT 0,  -- "blocked"
     is_approved   INTEGER NOT NULL DEFAULT 0,  -- new users can't send reports until an admin approves them
     created_at    TEXT NOT NULL,
     last_seen_at  TEXT NOT NULL,
     language      TEXT  -- 'am' or 'en'; NULL until the user picks one
 );
+"""
+USER_COLUMNS = "telegram_id, username, full_name, role, is_suspended, is_approved, created_at, last_seen_at, language"
 
+
+def _users_table(name: str) -> str:
+    return USERS_TABLE.format(name=name, roles=", ".join(f"'{r}'" for r in ROLES))
+
+
+SCHEMA = _users_table("users") + """
 """ + _reports_table("reports") + """
 CREATE INDEX IF NOT EXISTS idx_reports_created ON reports(created_at);
 CREATE INDEX IF NOT EXISTS idx_reports_user ON reports(user_id, created_at);
@@ -83,6 +95,15 @@ class User:
     @property
     def is_admin(self) -> bool:
         return self.is_super_admin or self.role == "admin"
+
+    @property
+    def is_manager(self) -> bool:
+        return self.role == "manager" and not self.is_super_admin
+
+    @property
+    def can_view_reports(self) -> bool:
+        """Admins and managers read everyone's reports."""
+        return (self.is_admin or self.is_manager) and not self.is_suspended
 
     @property
     def is_pending(self) -> bool:
@@ -163,6 +184,32 @@ class Database:
         if "language" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(users)")}:
             self.conn.execute("ALTER TABLE users ADD COLUMN language TEXT")
             self.conn.commit()
+        self._migrate_user_roles()
+
+    def _migrate_user_roles(self) -> None:
+        """Older databases only allowed the 'user' and 'admin' roles; copy the users table into one
+        that also allows 'manager' (SQLite can't change a CHECK constraint in place)."""
+        sql = self.conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'users'"
+        ).fetchone()["sql"]
+        if all(f"'{r}'" in sql for r in ROLES):
+            return
+        self.conn.execute("PRAGMA foreign_keys = OFF")
+        try:
+            self.conn.executescript(
+                "BEGIN;"
+                + _users_table("users_new")
+                + f"INSERT INTO users_new ({USER_COLUMNS}) SELECT {USER_COLUMNS} FROM users;"
+                "DROP TABLE users;"
+                "ALTER TABLE users_new RENAME TO users;"
+                "COMMIT;"
+            )
+        except Exception:
+            if self.conn.in_transaction:
+                self.conn.rollback()
+            raise
+        finally:
+            self.conn.execute("PRAGMA foreign_keys = ON")
 
     def _migrate_report_kinds(self) -> None:
         """Older databases only allowed text / photo / document reports. SQLite can't change a CHECK
@@ -282,6 +329,17 @@ class Database:
         )
         self.conn.commit()
         return cur.lastrowid
+
+    def report_viewer_ids(self) -> list[int]:
+        """Admins and managers who should get new-report alerts (not suspended, have started the bot)."""
+        rows = self.conn.execute(
+            "SELECT telegram_id, role FROM users WHERE is_suspended = 0"
+        ).fetchall()
+        return [
+            r["telegram_id"]
+            for r in rows
+            if r["role"] in ("admin", "manager") or r["telegram_id"] in config.SUPER_ADMIN_IDS
+        ]
 
     def active_admin_ids(self) -> list[int]:
         """Admins who should receive live reports (not suspended, have started the bot)."""

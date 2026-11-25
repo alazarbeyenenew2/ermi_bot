@@ -41,6 +41,13 @@ WELCOME_ADMIN = (
     f"<b>{BTN_USERS}</b>\n   መቀበል፣ ማገድ፣ ማንቃት፣ አስተዳዳሪ ማድረግ\n"
     f"<b>{BTN_ALL}</b>\n   የሁሉም ተጠቃሚዎች ሪፖርቶች"
 )
+WELCOME_MANAGER = (
+    f"\n\n📋 <b>እርስዎ ሥራ አስኪያጅ ነዎት</b>\n{LINE}\n"
+    f"<b>{BTN_READ}</b>\n   የዛሬን ሪፖርቶች በየተጠቃሚው አንድ በአንድ\n"
+    f"<b>{BTN_STATUS}</b>\n   የዛሬ ሁኔታ በአጭሩ\n"
+    f"<b>{BTN_ALL}</b>\n   የሁሉም ተጠቃሚዎች ሪፖርቶች\n"
+    "<i>አዲስ ሪፖርት በመጣ ቁጥር መልእክት ይደርስዎታል።</i>"
+)
 PENDING = ("⏳ መለያዎ አስተዳዳሪ እስኪቀበለው <b>በመጠባበቅ ላይ</b> ነው።\n"
            "ሪፖርት መላክ ሲችሉ እዚሁ መልእክት ይደርስዎታል።")
 BLOCKED = "⛔ መለያዎ <b>ታግዷል</b>።\nእባክዎ አስተዳዳሪን ያነጋግሩ።"
@@ -95,6 +102,9 @@ ACTIONS = {
     "approve": ("✅ ተቀበል", "✅ መለያዎ <b>ተቀባይነት አግኝቷል</b>።\nአሁን ሪፖርት መላክ ይችላሉ።"),
     "make_admin": ("🛡 አስተዳዳሪ አድርግ", "🛡 አሁን <b>አስተዳዳሪ</b> ነዎት።\nሪፖርቶችን ለማንበብ ከታች ያሉትን ቁልፎች ይጠቀሙ።"),
     "remove_admin": ("➖ ከአስተዳዳሪነት አንሳ", "ከአሁን በኋላ አስተዳዳሪ አይደሉም።"),
+    "make_manager": ("📋 ሥራ አስኪያጅ አድርግ", "📋 አሁን <b>ሥራ አስኪያጅ</b> ነዎት።\nየሁሉንም ሪፖርቶች ማንበብ ይችላሉ፤ "
+                                          "አዲስ ሪፖርት ሲመጣም መልእክት ይደርስዎታል።"),
+    "remove_manager": ("➖ ከሥራ አስኪያጅነት አንሳ", "ከአሁን በኋላ ሥራ አስኪያጅ አይደሉም።"),
     "block": ("⛔ አግድ", "⛔ መለያዎ <b>ታግዷል</b>።\nየሚልኳቸው ሪፖርቶች አይቀመጡም።"),
     "unblock": ("▶️ አንቃ", "▶️ መለያዎ እንደገና <b>ንቁ</b> ሆኗል።\nሪፖርት መላክ ይችላሉ።"),
 }
@@ -192,19 +202,27 @@ def users_title(filter_label: str, count: int, page: int, pages: int) -> str:
     return text + f"\n{LINE}"
 
 
-def users_row(n: int, badge: str, name: str, today: int, total: int) -> str:
-    return f"{n}. {badge} {name}\n      ዛሬ {today} · ጠቅላላ {total}"
+def users_row(n: int, name: str, today: int, total: int) -> str:
+    return f"<code>{n:>2}.</code> {name}  ·  📨 {today}/{total}"
 
 
-USERS_EMPTY = "እዚህ ማንም የለም።"
-USERS_LEGEND = (f"{LINE}\n⭐ ዋና አስተዳዳሪ · 🛡 አስተዳዳሪ · 👤 ተጠቃሚ\n⏳ በመጠባበቅ ላይ · ⛔ የታገደ\n"
-                "<i>ዝርዝር ለማየት ስሙን፣ ሪፖርቶቹን ለማየት 📂 ይጫኑ።</i>")
+SECTIONS = {"pending": "⏳ <b>ፈቃድ የሚጠብቁ</b>", "admins": "🛡 <b>አስተዳዳሪዎች</b>",
+            "managers": "📋 <b>ሥራ አስኪያጆች</b>", "users": "👤 <b>ተጠቃሚዎች</b>", "suspended": "⛔ <b>የታገዱ</b>"}
+USERS_EMPTY = "<i>እዚህ ማንም የለም።</i>"
+USERS_LEGEND = f"{LINE}\n<i>📨 = የዛሬ / ጠቅላላ ሪፖርቶች · ⭐ = ዋና አስተዳዳሪ</i>"
+USERS_HINT = {"a": "ለማስተዳደር ስሙን፣ ለሪፖርቶች 📂 ይጫኑ።", "c": "ለማስተዳደር ስሙን፣ ለሪፖርቶች 📂 ይጫኑ።",
+              "p": "✅ ተቀበል · ⛔ አግድ · ወይም ስሙን ይጫኑ።", "s": "▶️ አንቃ · 📂 ሪፖርቶች · ወይም ስሙን ይጫኑ።"}
+
+
+def page_label(page: int, pages: int) -> str:
+    return f"{page}/{pages}"
 ALL_USERS_REPORTS = "🗂 የሁሉም ሪፖርቶች"
 
 # ---------- user card ----------
 ROLE_SUPER = "⭐ ዋና አስተዳዳሪ"
 ROLE_ADMIN = "🛡 አስተዳዳሪ"
 ROLE_USER = "👤 ተጠቃሚ"
+ROLE_MANAGER = "📋 ሥራ አስኪያጅ"
 STATE_SUSPENDED = "⛔ ታግዷል"
 STATE_PENDING = "⏳ በመጠባበቅ ላይ"
 STATE_ACTIVE = "✅ ንቁ"

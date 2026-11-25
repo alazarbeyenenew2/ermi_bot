@@ -1,4 +1,4 @@
-"""Web admin page: manage users (accept, make admin, remove admin, suspend, activate)."""
+"""Web admin page: manage users (accept, make admin / manager, remove admin / manager, suspend, activate)."""
 import hmac
 import secrets
 from pathlib import Path
@@ -36,6 +36,7 @@ def create_web_app(lifespan=None) -> FastAPI:
         stats = {
             "users": len(rows),
             "admins": sum(1 for r in rows if r["user"].is_admin),
+            "managers": sum(1 for r in rows if r["user"].is_manager),
             "blocked": sum(1 for r in rows if r["user"].is_suspended),
             "waiting": sum(1 for r in rows if r["user"].is_pending),
             "today": sum(r["today_reports"] for r in rows),

@@ -48,6 +48,13 @@ WELCOME_ADMIN = (
     f"<b>{BTN_USERS}</b>\n   accept, suspend, activate, make admins\n"
     f"<b>{BTN_ALL}</b>\n   everyone's reports"
 )
+WELCOME_MANAGER = (
+    f"\n\n📋 <b>You are a manager</b>\n{LINE}\n"
+    f"<b>{BTN_READ}</b>\n   today's reports, one user at a time\n"
+    f"<b>{BTN_STATUS}</b>\n   today at a glance\n"
+    f"<b>{BTN_ALL}</b>\n   everyone's reports\n"
+    "<i>You get a message for every new report.</i>"
+)
 PENDING = ("⏳ Your account is <b>waiting</b> for an admin to accept it.\n"
            "You'll get a message here as soon as you can send reports.")
 BLOCKED = "⛔ Your account is <b>suspended</b>.\nPlease contact an admin."
@@ -102,6 +109,9 @@ ACTIONS = {
     "approve": ("✅ Accept", "✅ Your account has been <b>accepted</b>.\nYou can send reports now."),
     "make_admin": ("🛡 Make admin", "🛡 You are now an <b>admin</b>.\nUse the buttons below to read reports."),
     "remove_admin": ("➖ Remove admin", "You are no longer an admin."),
+    "make_manager": ("📋 Make manager", "📋 You are now a <b>manager</b>.\nYou can read everyone's reports, "
+                                       "and you'll be told about each new one."),
+    "remove_manager": ("➖ Remove manager", "You are no longer a manager."),
     "block": ("⛔ Suspend", "⛔ Your account has been <b>suspended</b>.\nYour reports will not be saved."),
     "unblock": ("▶️ Activate", "▶️ Your account is <b>active</b> again.\nYou can send reports."),
 }
@@ -199,19 +209,27 @@ def users_title(filter_label: str, count: int, page: int, pages: int) -> str:
     return text + f"\n{LINE}"
 
 
-def users_row(n: int, badge: str, name: str, today: int, total: int) -> str:
-    return f"{n}. {badge} {name}\n      today {today} · total {total}"
+def users_row(n: int, name: str, today: int, total: int) -> str:
+    return f"<code>{n:>2}.</code> {name}  ·  📨 {today}/{total}"
 
 
-USERS_EMPTY = "Nobody here."
-USERS_LEGEND = (f"{LINE}\n⭐ super admin · 🛡 admin · 👤 user\n⏳ pending · ⛔ suspended\n"
-                "<i>Tap a name for details, 📂 for their reports.</i>")
+SECTIONS = {"pending": "⏳ <b>Waiting for approval</b>", "admins": "🛡 <b>Admins</b>",
+            "managers": "📋 <b>Managers</b>", "users": "👤 <b>Users</b>", "suspended": "⛔ <b>Suspended</b>"}
+USERS_EMPTY = "<i>Nobody here.</i>"
+USERS_LEGEND = f"{LINE}\n<i>📨 = reports today / total · ⭐ = super admin</i>"
+USERS_HINT = {"a": "Tap a name to manage, 📂 for reports.", "c": "Tap a name to manage, 📂 for reports.",
+              "p": "✅ accept · ⛔ suspend · or tap the name.", "s": "▶️ activate · 📂 reports · or tap the name."}
+
+
+def page_label(page: int, pages: int) -> str:
+    return f"{page}/{pages}"
 ALL_USERS_REPORTS = "🗂 Everyone's reports"
 
 # ---------- user card ----------
 ROLE_SUPER = "⭐ Super admin"
 ROLE_ADMIN = "🛡 Admin"
 ROLE_USER = "👤 User"
+ROLE_MANAGER = "📋 Manager"
 STATE_SUSPENDED = "⛔ Suspended"
 STATE_PENDING = "⏳ Pending"
 STATE_ACTIVE = "✅ Active"

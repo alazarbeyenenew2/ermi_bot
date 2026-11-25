@@ -31,16 +31,18 @@ Menus (users list, a user's details, report periods) update the same message ins
 - **Every new report is sent to all admins** the moment it arrives (always on), as "🆕 አዲስ ሪፖርት" (new report) with the sender's name and **📂 ሪፖርቶቹ** (their reports) and **👤 ተጠቃሚው** (the user) buttons, followed by the report itself. Albums arrive together as one album. The admin who sent a report doesn't get their own. A report delivered this way counts as read, so `/read` only shows reports you missed, for example ones that arrived while you had blocked the bot; set `LIVE_MARKS_READ=false` to have `/read` show everything anyway. Admins only receive these after they've sent `/start` to the bot once (Telegram doesn't let bots message people first).
 - `/read`: shows all of **today's** unread reports from the **next user**, then marks them as read. Tap **➡️ ቀጣይ ተጠቃሚ** (next user) to keep going until everything is read. Each admin has their own read state.
 - `/status`: today's totals, which users still have unread reports, and how many users are pending, with a button to start reading.
-- **👥 List users** (or `/users`): tabs for **All**, **⏳ Pending**, **✅ Active** and **⛔ Suspended** (with counts), 10 users per page. Next to each user:
-  - their name: opens their details with **Accept**, **Make admin / Remove admin**, **Suspend / Activate** and **📂 Reports**;
-  - **📂**: their reports by period;
-  - one quick button: **✅ Accept** (pending), **⛔ Suspend** (active) or **▶️ Activate** (suspended).
+- **👥 Users** (or `/users`): tabs for **All**, **⏳ Pending**, **✅ Active** and **⛔ Suspended** (with counts), 10 users per page. The list is grouped into sections (waiting for approval, admins, managers, users, suspended), each user numbered with their reports today / total. Every row in a tab has the same buttons, so the list lines up:
+  - **All / Active**: the user's name (opens their details) and **📂** (their reports);
+  - **Pending**: the name, **✅** accept and **⛔** suspend;
+  - **Suspended**: the name, **▶️** activate and **📂**.
 
-  The user gets a Telegram message about any change and their keyboard updates.
-  - **Any admin** can accept, suspend, activate and make admins.
+  A user's details have **Accept**, **Make admin / Remove admin**, **Make manager / Remove manager**, **Suspend / Activate** and **📂 Reports**. The user gets a Telegram message about any change and their keyboard updates.
+  - **Any admin** can accept, suspend, activate, make admins and make or remove managers.
   - Only **super admins** (`SUPER_ADMIN_IDS`) can remove an admin or suspend one. Nobody can change a super admin or themselves.
 - **🗂 All reports** (or `/reports`): everyone's reports by period, also at the bottom of the users list.
 - **🗑 Delete reports permanently**: every report an admin sees (Read, All reports, a user's reports, new-report alerts) has a **🗑 Delete** button; albums get one **Delete album** button after them. Deleting asks for confirmation, then removes the report from the database for everyone. Users don't get delete buttons.
+
+**Managers** (📋) are made by an admin or super admin from a user's details. A manager can **read reports** (📥 Read reports, 📊 Summary, 🗂 All reports, a user's reports) and **gets the new-report and edited-report alerts**, but can't manage users: no 👥 Users screen, no accepting, suspending or changing roles, no deleting reports, no new-user alerts and no backups. Managers can still send their own reports.
 
 **Super admins** also get:
 - **🗑 Remove user** on a user's details: after confirmation, the user and all their reports are deleted permanently. If they start the bot again they're a new, pending user. Super admins can't be removed.

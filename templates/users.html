@@ -29,6 +29,7 @@
 <div class="stats">
   <div class="card stat"><span class="muted">Users</span><b>{{ stats.users }}</b></div>
   <div class="card stat"><span class="muted">Admins</span><b>{{ stats.admins }}</b></div>
+  <div class="card stat"><span class="muted">Managers</span><b>{{ stats.managers }}</b></div>
   <div class="card stat"><span class="muted">Pending</span><b>{{ stats.waiting }}</b></div>
   <div class="card stat"><span class="muted">Suspended</span><b>{{ stats.blocked }}</b></div>
   <div class="card stat"><span class="muted">Reports today</span><b>{{ stats.today }}</b></div>
@@ -56,6 +57,7 @@
         <td>
           {% if u.is_super_admin %}<span class="badge b-super">super admin</span>
           {% elif u.is_admin %}<span class="badge b-admin">admin</span>
+          {% elif u.is_manager %}<span class="badge b-admin">manager</span>
           {% else %}<span class="badge b-user">user</span>{% endif %}
         </td>
         <td>{% if u.is_suspended %}<span class="badge b-susp">suspended</span>
@@ -76,7 +78,10 @@
             {% endmacro %}
             {% if u.is_pending %}{{ act("approve", "Accept", "ok") }}{% endif %}
             {% if u.role == "admin" %}{{ act("remove_admin", "Remove admin") }}
-            {% else %}{{ act("make_admin", "Make admin", "primary") }}{% endif %}
+            {% else %}{{ act("make_admin", "Make admin", "primary") }}
+              {% if u.role == "manager" %}{{ act("remove_manager", "Remove manager") }}
+              {% else %}{{ act("make_manager", "Make manager") }}{% endif %}
+            {% endif %}
             {% if u.is_suspended %}{{ act("unblock", "Activate", "ok") }}
             {% else %}{{ act("block", "Suspend", "danger", "Suspend this user?") }}{% endif %}
           </div>
