@@ -1,9 +1,11 @@
-# Deploy:
+# Production: deployed by .github/workflows/deploy.yml, which writes .env from GitHub secrets/variables.
+# Manual run (local testing only):
 #   cp .env.example .env   # fill it in
 #   docker compose up -d --build                    # bot + admin page on 127.0.0.1:8000
 #   docker compose --profile https up -d --build    # also serve the admin page over HTTPS at $DOMAIN
 #
 # Run only ONE copy of the bot: Telegram allows a single long-polling connection per token.
+name: report-bot
 
 services:
   bot:

@@ -1,4 +1,18 @@
+# Python
 .venv/
-.env
-data/
 __pycache__/
+*.pyc
+
+# Local env files (secrets). In production they come from GitHub Actions secrets/variables.
+.env
+.env.*
+!.env.example
+
+# Data and backups
+data/
+backups/
+*.db
+
+# Keys
+*.pem
+*.key

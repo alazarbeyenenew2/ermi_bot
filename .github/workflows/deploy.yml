@@ -16,10 +16,13 @@
 # Repository variables (same page -> Variables):
 #   SUPER_ADMIN_IDS      your Telegram user ID(s), comma separated                       (required)
 #   DEPLOY_PORT (22), DEPLOY_PATH (report-bot, relative to the user's home),
-#   ADMIN_USERNAME (admin), TIMEZONE (UTC), LIVE_REPORTS (true), LIVE_MARKS_READ (true),
+#   ADMIN_USERNAME (admin), TIMEZONE (Africa/Addis_Ababa), LIVE_REPORTS (true), LIVE_MARKS_READ (true),
 #   DOMAIN       when set, also starts Caddy (`--profile https`) and serves the admin page at https://DOMAIN
 #                (DNS must point at the server, ports 80/443 open)
 #   ADMIN_BIND (127.0.0.1), ADMIN_PORT (8000)   where the plain-HTTP admin page is published on the server
+#
+# Every runtime setting comes from here: the workflow writes the server's .env on each deploy and
+# overwrites any hand edits there. Setup steps: see "Deploy with GitHub Actions" in README.md.
 name: Deploy
 
 on:
@@ -143,7 +146,7 @@ jobs:
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
           LIVE_REPORTS: ${{ vars.LIVE_REPORTS || 'true' }}
           LIVE_MARKS_READ: ${{ vars.LIVE_MARKS_READ || 'true' }}
-          TIMEZONE: ${{ vars.TIMEZONE || 'UTC' }}
+          TIMEZONE: ${{ vars.TIMEZONE || 'Africa/Addis_Ababa' }}
           ADMIN_BIND: ${{ vars.ADMIN_BIND || '127.0.0.1' }}
           ADMIN_PORT: ${{ vars.ADMIN_PORT || '8000' }}
         run: |

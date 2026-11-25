@@ -23,7 +23,7 @@ A Telegram bot where users send reports (text and images), and admins read each 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-cp .env.example .env   # then edit .env
+cp .env.example .env   # then edit .env (local development only)
 .venv/bin/python main.py
 ```
 
@@ -33,50 +33,69 @@ cp .env.example .env   # then edit .env
 4. Run `main.py`. It starts the bot (long polling) and the admin page together.
 5. Send `/start` to the bot. Users show up on the admin page after their first `/start` or message.
 
-## Deploy with Docker Compose
+## Deploy with GitHub Actions
 
-On the server (Docker and the Compose plugin must be installed):
+All production configuration lives in GitHub: **Settings → Secrets and variables → Actions**. Nothing is edited on the server.
+[`.github/workflows/deploy.yml`](.github/workflows/deploy.yml) runs on every push to `main` (or by hand: *Actions → Deploy → Run workflow*). It checks the code (compile, render the login page, build the image, validate the compose file), then over SSH it copies the code to the server, writes `.env` from the secrets and variables, backs up the database to `backups/` (keeps the 14 newest), runs `docker compose up -d --build`, and waits for "Bot started as @...".
+
+The workflow overwrites the server's `.env` on every deploy. To change a setting, change it in GitHub and re-run the workflow.
+
+### 1. Prepare the server (once)
 
 ```bash
-git clone <your-repo> report-bot && cd report-bot   # or copy the folder with scp/rsync
-cp .env.example .env && nano .env                     # fill in BOT_TOKEN, SUPER_ADMIN_IDS, ADMIN_PASSWORD, SECRET_KEY
-docker compose up -d --build
-docker compose logs -f bot                            # look for "Bot started as @..."
+# Docker + compose plugin + rsync (Ubuntu/Debian)
+curl -fsSL https://get.docker.com | sh
+sudo apt-get install -y rsync
+sudo usermod -aG docker <deploy user>     # log out and back in afterwards
 ```
 
-The database is stored in the `bot-data` Docker volume, so it survives rebuilds and restarts.
+### 2. Make a deploy key (on your computer)
 
-**Opening the admin page.** By default it's published only on the server's `127.0.0.1:8000`, so it is never exposed over plain HTTP. Choose one way in:
+```bash
+ssh-keygen -t ed25519 -f report_bot_deploy -N '' -C github-deploy
+ssh-copy-id -i report_bot_deploy.pub <deploy user>@<server ip>
+ssh-keyscan -H <server ip>               # output goes in DEPLOY_KNOWN_HOSTS
+```
 
-- **HTTPS with your own domain (recommended).** Point a DNS record (for example `admin.example.com`) at the server, open ports 80 and 443, set `DOMAIN=admin.example.com` in `.env`, then run:
-  ```bash
-  docker compose --profile https up -d --build
-  ```
-  Caddy gets a Let's Encrypt certificate automatically. Then open `https://admin.example.com`.
-- **SSH tunnel (no domain needed).** On your own computer, run `ssh -L 8000:127.0.0.1:8000 user@server`, then open `http://localhost:8000`.
-- **Public plain HTTP (not recommended).** Set `ADMIN_BIND=0.0.0.0` in `.env`.
+### 3. Add secrets and variables
 
-**Common tasks**
+| Secret | Value |
+| --- | --- |
+| `DEPLOY_HOST` | server IP or hostname |
+| `DEPLOY_USER` | SSH user |
+| `DEPLOY_SSH_KEY` | contents of `report_bot_deploy` (the private key) |
+| `DEPLOY_KNOWN_HOSTS` | output of `ssh-keyscan -H <server ip>` (recommended) |
+| `BOT_TOKEN` | token from @BotFather |
+| `ADMIN_PASSWORD` | web admin page password |
+| `SECRET_KEY` | random string that signs login cookies: `python3 -c "import secrets; print(secrets.token_hex(32))"` |
+
+| Variable | Default | Value |
+| --- | --- | --- |
+| `SUPER_ADMIN_IDS` | (required) | your Telegram user ID(s), comma separated (get it from @userinfobot) |
+| `ADMIN_USERNAME` | `admin` | web admin page username |
+| `TIMEZONE` | `Africa/Addis_Ababa` | decides what "today" means |
+| `LIVE_REPORTS` | `true` | send each new report to admins instantly |
+| `LIVE_MARKS_READ` | `true` | reports delivered instantly count as read |
+| `DOMAIN` | (none) | when set, Caddy serves the admin page at `https://DOMAIN` (DNS must point at the server, ports 80/443 open) |
+| `ADMIN_BIND` | `127.0.0.1` | address the plain-HTTP admin page listens on (`0.0.0.0` = public, not recommended) |
+| `ADMIN_PORT` | `8000` | port of the plain-HTTP admin page |
+| `DEPLOY_PORT` | `22` | SSH port |
+| `DEPLOY_PATH` | `report-bot` | folder in the SSH user's home |
+
+### 4. Deploy
+
+Push to `main`, or run the workflow from the Actions tab. Stop any other copy of the bot first (for example on your laptop), or Telegram reports `Conflict` errors: it allows one polling connection per token.
+
+**Opening the admin page** when `DOMAIN` is not set: it listens only on the server's `127.0.0.1:8000`. Use an SSH tunnel: `ssh -L 8000:127.0.0.1:8000 user@server`, then open `http://localhost:8000`.
+
+**Common tasks on the server** (in `~/report-bot`)
 
 | Task | Command |
 |---|---|
-| Update after code changes | `docker compose up -d --build` (add `--profile https` if you use it) |
+| Logs | `docker compose logs -f bot` |
 | Restart | `docker compose restart bot` |
-| Stop | `docker compose down` (data is kept) |
-| Back up the database | `docker compose exec bot python -c "import sqlite3; sqlite3.connect('/app/data/bot.db').backup(sqlite3.connect('/app/data/backup.db'))" && docker compose cp bot:/app/data/backup.db ./backup-$(date +%F).db` |
-
-Run only **one** copy of the bot. Telegram allows one polling connection per token, so a second copy (another server, or `main.py` still running on your laptop) causes `Conflict` errors.
-
-## Deploy with GitHub Actions
-
-`.github/workflows/deploy.yml` runs on every push to `main` (or by hand from the Actions tab). It checks the code (compile, renders the login page, builds the image), then over SSH it copies the code to the server, writes `.env`, backs up the database to `backups/` (keeps 14), runs `docker compose up -d --build`, and waits for "Bot started as @...".
-
-The server needs Docker (usable by the SSH user without `sudo`), the Compose plugin and `rsync`. In the repository settings, set:
-
-- **Secrets:** `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_SSH_KEY`, `BOT_TOKEN`, `ADMIN_PASSWORD`, `SECRET_KEY`, and preferably `DEPLOY_KNOWN_HOSTS` (output of `ssh-keyscan -H <host>`).
-- **Variables:** `SUPER_ADMIN_IDS` (required). Optional: `TIMEZONE`, `ADMIN_USERNAME`, `LIVE_REPORTS`, `LIVE_MARKS_READ`, `ADMIN_BIND`, `ADMIN_PORT`, `DEPLOY_PORT`, `DEPLOY_PATH` (default `report-bot`), and `DOMAIN` (when set, Caddy also serves the admin page over HTTPS).
-
-The workflow overwrites the server's `.env` on every deploy, so change settings in GitHub, not on the server. Stop any other copy of the bot first (for example on your laptop), or Telegram will report `Conflict` errors.
+| Stop | `docker compose down` (data is kept in the `bot-data` volume) |
+| Restore a backup | `docker compose stop bot && docker compose cp backups/<file>.db bot:/app/data/bot.db && docker compose start bot` |
 
 ## Files
 

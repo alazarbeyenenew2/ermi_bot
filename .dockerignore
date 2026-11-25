@@ -7,3 +7,6 @@ __pycache__/
 Caddyfile
 docker-compose.yml
 README.md
+backups/
+.github/
+.env.*
