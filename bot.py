@@ -1,6 +1,6 @@
 """Telegram bot: users send reports (text, photos, files…), admins read them and manage users.
 
-Every text shown in Telegram lives in texts.py (Amharic).
+Every text shown in Telegram lives in texts_am.py / texts_en.py; each person sees their own language.
 """
 import asyncio
 import html
@@ -32,7 +32,7 @@ from telegram.ext import (
 )
 
 import config
-import texts as T
+import texts
 from db import Report, User, day_range_utc, db, local_today, to_local
 
 log = logging.getLogger(__name__)
@@ -52,6 +52,7 @@ USER_ACTION = "act:"     # act:<telegram_id>:<action>:<pos>   (then shows the us
 QUICK_ACTION = "qa:"     # qa:<telegram_id>:<action>:<pos>    (then shows the users list)
 REPORTS_MENU = "rpm:"    # rpm:<telegram_id>[:e]   0 = all users; ":e" = replace the tapped message
 REPORTS = "rp:"          # rp:<telegram_id>:<period>:<offset>
+SET_LANGUAGE = "lang:"   # lang:<code>
 
 # Users list filters: letter -> test
 FILTERS = {
@@ -61,28 +62,38 @@ FILTERS = {
     "s": lambda u: u.is_suspended,
 }
 
-USER_COMMANDS = [
-    BotCommand("start", T.CMD_START),
-    BotCommand("mine", T.CMD_MINE),
-]
-ADMIN_COMMANDS = USER_COMMANDS + [
-    BotCommand("read", T.CMD_READ),
-    BotCommand("status", T.CMD_STATUS),
-    BotCommand("users", T.CMD_USERS),
-    BotCommand("reports", T.CMD_REPORTS),
-]
+# The actions an admin can take on a user (labels and messages are in the texts modules).
+ACTIONS = tuple(texts.get(None).ACTIONS)
 
-# action -> (button label, message sent to the user). Used by web.py too.
-ACTIONS = T.ACTIONS
+
+def tr(user: User | None):
+    """The texts module for a person's language."""
+    return texts.get(user.language if user else None)
+
+
+def _commands(user: User) -> list[BotCommand]:
+    L = tr(user)
+    commands = [BotCommand("start", L.CMD_START), BotCommand("mine", L.CMD_MINE)]
+    if user.is_admin:
+        commands += [BotCommand("read", L.CMD_READ), BotCommand("status", L.CMD_STATUS),
+                     BotCommand("users", L.CMD_USERS), BotCommand("reports", L.CMD_REPORTS)]
+    return commands + [BotCommand("language", L.CMD_LANGUAGE)]
 
 
 def main_keyboard(user: User) -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(T.BTN_SEND), KeyboardButton(T.BTN_MINE)]]
+    L = tr(user)
+    rows = [[KeyboardButton(L.BTN_SEND), KeyboardButton(L.BTN_MINE)]]
     if user.is_admin and not user.is_suspended:
-        rows += [[KeyboardButton(T.BTN_READ), KeyboardButton(T.BTN_STATUS)],
-                 [KeyboardButton(T.BTN_USERS), KeyboardButton(T.BTN_ALL)]]
+        rows += [[KeyboardButton(L.BTN_READ), KeyboardButton(L.BTN_STATUS)],
+                 [KeyboardButton(L.BTN_USERS), KeyboardButton(L.BTN_ALL)]]
+    rows.append([KeyboardButton(texts.LANGUAGE_BUTTON)])
     return ReplyKeyboardMarkup(rows, resize_keyboard=True, is_persistent=True,
-                               input_field_placeholder=T.KEYBOARD_PLACEHOLDER)
+                               input_field_placeholder=L.KEYBOARD_PLACEHOLDER)
+
+
+def language_picker() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[InlineKeyboardButton(name, callback_data=f"{SET_LANGUAGE}{code}")
+                                  for code, name in texts.LANGUAGE_NAMES.items()]])
 
 
 def _button(text: str, data: str) -> InlineKeyboardButton:
@@ -106,30 +117,31 @@ def _register(update: Update, context: ContextTypes.DEFAULT_TYPE) -> User:
 
 async def _announce_new_user(app: Application, user: User) -> None:
     """Ask every admin to accept or suspend a new user."""
-    text = T.new_user_alert(html.escape(user.display_name), user.telegram_id)
-    keyboard = InlineKeyboardMarkup([[
-        _button(ACTIONS["approve"][0], f"{USER_ACTION}{user.telegram_id}:approve:p0"),
-        _button(ACTIONS["block"][0], f"{USER_ACTION}{user.telegram_id}:block:p0"),
-    ]])
     for admin_id in db.active_admin_ids():
-        await notify(app, admin_id, text, reply_markup=keyboard)
+        L = tr(db.get_user(admin_id))
+        keyboard = InlineKeyboardMarkup([[
+            _button(L.ACTIONS["approve"][0], f"{USER_ACTION}{user.telegram_id}:approve:p0"),
+            _button(L.ACTIONS["block"][0], f"{USER_ACTION}{user.telegram_id}:block:p0"),
+        ]])
+        await notify(app, admin_id, L.new_user_alert(html.escape(user.display_name), user.telegram_id),
+                     reply_markup=keyboard)
 
 
 def _truncate(text: str, limit: int) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _when(iso: str) -> str:
+def _when(iso: str, L) -> str:
     local = to_local(iso)
     if local.date() == local_today():
-        return f"{T.TODAY} {local:%H:%M}"
+        return f"{L.TODAY} {local:%H:%M}"
     return f"{local:%d/%m/%Y %H:%M}"
 
 
-def _caption(user: User, report: Report, limit: int) -> str:
-    header = T.caption_header(html.escape(user.display_name), _when(report.created_at))
+def _caption(user: User, report: Report, limit: int, L) -> str:
+    header = L.caption_header(html.escape(user.display_name), _when(report.created_at, L))
     if report.file_name:
-        header += "\n" + T.caption_file(html.escape(_truncate(report.file_name, 200)))
+        header += "\n" + L.caption_file(html.escape(_truncate(report.file_name, 200)))
     raw = report.text or ""
     # Shorten the raw text (not the escaped HTML) so we never cut an entity in half.
     while True:
@@ -159,7 +171,7 @@ async def _admin_from_update(update: Update, context: ContextTypes.DEFAULT_TYPE,
     await _answer_tap(update, clear_buttons)
     user = _register(update, context)
     if not user.is_admin or user.is_suspended:
-        await context.bot.send_message(update.effective_chat.id, T.ONLY_ADMINS,
+        await context.bot.send_message(update.effective_chat.id, tr(user).ONLY_ADMINS,
                                        reply_markup=main_keyboard(user))
         return None
     return user
@@ -181,12 +193,9 @@ async def _show(update: Update, context: ContextTypes.DEFAULT_TYPE, text: str,
 
 
 async def set_commands_for(app: Application, user: User) -> None:
-    """Show admin commands in the menu only for admins."""
+    """The command menu, in the user's language; admin commands only for admins."""
     try:
-        await app.bot.set_my_commands(
-            ADMIN_COMMANDS if user.is_admin else USER_COMMANDS,
-            scope=BotCommandScopeChat(user.telegram_id),
-        )
+        await app.bot.set_my_commands(_commands(user), scope=BotCommandScopeChat(user.telegram_id))
     except TelegramError as e:
         log.warning("Could not set commands for %s: %s", user.telegram_id, e)
 
@@ -203,7 +212,7 @@ async def apply_user_change(app: Application, telegram_id: int, action: str) -> 
     Used by both the bot and the web admin page."""
     user = change_user(telegram_id, action)
     await set_commands_for(app, user)
-    await notify(app, telegram_id, ACTIONS[action][1], reply_markup=main_keyboard(user))
+    await notify(app, telegram_id, tr(user).ACTIONS[action][1], reply_markup=main_keyboard(user))
     return user
 
 
@@ -231,20 +240,61 @@ def change_user(telegram_id: int, action: str) -> User:
 # ---------- start / send report ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = _register(update, context)
+    if not user.language:
+        # First time: ask for a language, then welcome them in it.
+        await update.message.reply_text(texts.LANGUAGE_PROMPT, parse_mode=ParseMode.HTML,
+                                        reply_markup=language_picker())
+        return
     await set_commands_for(context.application, user)
-    text = T.welcome(html.escape(update.effective_user.first_name or ""))
+    await _welcome(context, update.effective_chat.id, user, update.effective_user.first_name)
+
+
+async def _welcome(context: ContextTypes.DEFAULT_TYPE, chat_id: int, user: User, first_name: str | None) -> None:
+    L = tr(user)
+    text = L.welcome(html.escape(first_name or ""))
     if user.is_suspended:
-        text += T.BLOCKED
+        text += L.BLOCKED
     elif user.is_pending:
-        text += T.PENDING
+        text += L.PENDING
     else:
-        text += T.WELCOME_USER + (T.WELCOME_ADMIN if user.is_admin else "")
-    await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
+        text += L.WELCOME_USER + (L.WELCOME_ADMIN if user.is_admin else "")
+    await context.bot.send_message(chat_id, text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
+
+
+async def choose_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The 🌐 button or /language: show the language picker."""
+    _register(update, context)
+    await update.message.reply_text(texts.LANGUAGE_PROMPT, parse_mode=ParseMode.HTML,
+                                    reply_markup=language_picker())
+
+
+async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """lang:<code>: save the language, then show the welcome (and keyboard) in it."""
+    query = update.callback_query
+    code = query.data[len(SET_LANGUAGE):]
+    if code not in texts.LANGUAGES:
+        await query.answer()
+        return
+    user = _register(update, context)
+    first_time = not user.language
+    db.set_language(user.telegram_id, code)
+    user = db.get_user(user.telegram_id)
+    L = tr(user)
+    await query.answer()
+    # The picker becomes a record of the choice; the next message brings the keyboard in the new language.
+    await _show(update, context, f"🌐 {texts.LANGUAGE_NAMES[code]}", None)
+    await set_commands_for(context.application, user)
+    if first_time:
+        await _welcome(context, update.effective_chat.id, user, update.effective_user.first_name)
+    else:
+        await context.bot.send_message(update.effective_chat.id, L.LANGUAGE_SET, parse_mode=ParseMode.HTML,
+                                       reply_markup=main_keyboard(user))
 
 
 async def send_report_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = _register(update, context)
-    text = T.BLOCKED if user.is_suspended else T.PENDING if user.is_pending else T.SEND_PROMPT
+    L = tr(user)
+    text = L.BLOCKED if user.is_suspended else L.PENDING if user.is_pending else L.SEND_PROMPT
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
 
 
@@ -258,9 +308,9 @@ def _period_range(period: str) -> tuple[str | None, str | None]:
     return day_range_utc(first)[0], day_range_utc(today)[1]
 
 
-def _period_rows(target_id: int, current: str | None = None) -> list[list[InlineKeyboardButton]]:
+def _period_rows(L, target_id: int, current: str | None = None) -> list[list[InlineKeyboardButton]]:
     return _pairs([_button(("• " if p == current else "") + label, f"{REPORTS}{target_id}:{p}:0")
-                   for p, label in T.PERIODS.items()])
+                   for p, label in L.PERIODS.items()])
 
 
 def _can_view(viewer: User, target_id: int) -> bool:
@@ -270,30 +320,33 @@ def _can_view(viewer: User, target_id: int) -> bool:
 
 
 def _reports_title(viewer: User, target_id: int) -> str:
+    L = tr(viewer)
     if target_id == viewer.telegram_id:
-        return T.TITLE_MINE
+        return L.TITLE_MINE
     if target_id == 0:
-        return T.TITLE_ALL
+        return L.TITLE_ALL
     target = db.get_user(target_id)
-    return T.title_user(html.escape(target.display_name if target else str(target_id)))
+    return L.title_user(html.escape(target.display_name if target else str(target_id)))
 
 
 def _back_from_reports(viewer: User, target_id: int) -> list[list[InlineKeyboardButton]]:
     """A back button for reports reached from the users screens."""
     if target_id == viewer.telegram_id:
         return []
+    L = tr(viewer)
     if target_id == 0:
-        return [[_button(T.BACK, f"{USERS_PAGE}a0")]]
-    return [[_button(T.BACK, f"{USER_CARD}{target_id}:a0")]]
+        return [[_button(L.BACK, f"{USERS_PAGE}a0")]]
+    return [[_button(L.BACK, f"{USER_CARD}{target_id}:a0")]]
 
 
 async def _reports_menu(update: Update, context: ContextTypes.DEFAULT_TYPE, viewer: User,
                         target_id: int, in_place: bool) -> None:
+    L = tr(viewer)
     if not _can_view(viewer, target_id):
-        await context.bot.send_message(update.effective_chat.id, T.ONLY_ADMINS)
+        await context.bot.send_message(update.effective_chat.id, L.ONLY_ADMINS)
         return
-    text = f"📂 <b>{_reports_title(viewer, target_id)}</b>\n{T.LINE}\n{T.CHOOSE_PERIOD}"
-    rows = _period_rows(target_id) + (_back_from_reports(viewer, target_id) if in_place else [])
+    text = f"📂 <b>{_reports_title(viewer, target_id)}</b>\n{L.LINE}\n{L.CHOOSE_PERIOD}"
+    rows = _period_rows(L, target_id) + (_back_from_reports(viewer, target_id) if in_place else [])
     if in_place:
         await _show(update, context, text, InlineKeyboardMarkup(rows))
     else:
@@ -326,11 +379,12 @@ async def reports_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     _, target, period, offset = update.callback_query.data.split(":")
     target_id, offset = int(target), int(offset)
     viewer = _register(update, context)
+    L = tr(viewer)
     await update.callback_query.answer()
     chat_id = update.effective_chat.id
     bot = context.bot
     if not _can_view(viewer, target_id):
-        await bot.send_message(chat_id, T.ONLY_ADMINS)
+        await bot.send_message(chat_id, L.ONLY_ADMINS)
         return
 
     user_filter = target_id or None
@@ -339,14 +393,14 @@ async def reports_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     page = db.reports_newest_first(user_filter, start, end, REPORTS_PER_PAGE, offset)
 
     # The tapped menu becomes the title, so the chat reads: title, reports, then the next choices.
-    title = f"📂 <b>{_reports_title(viewer, target_id)}</b>\n{T.PERIODS[period]}\n{T.LINE}\n"
+    title = f"📂 <b>{_reports_title(viewer, target_id)}</b>\n{L.PERIODS[period]}\n{L.LINE}\n"
     if not page:
-        title += T.NO_REPORTS
+        title += L.NO_REPORTS
     else:
-        title += T.report_count(total)
+        title += L.report_count(total)
         if total > len(page):
-            title += "\n<i>" + (T.showing_newest(len(page)) if offset == 0
-                                else T.showing_older(offset + 1, offset + len(page))) + "</i>"
+            title += "\n<i>" + (L.showing_newest(len(page)) if offset == 0
+                                else L.showing_older(offset + 1, offset + len(page))) + "</i>"
     await _show(update, context, title, None)
 
     reporters: dict[int, User] = {}
@@ -354,17 +408,17 @@ async def reports_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     for group in _group_albums(list(reversed(page))):
         reporter = reporters.setdefault(group[0].user_id, db.get_user(group[0].user_id))
         try:
-            await _send_group(bot, chat_id, reporter, group)
+            await _send_group(bot, chat_id, reporter, group, L)
         except TelegramError as e:
             log.warning("Could not show reports %s: %s", [r.id for r in group], e)
-            await bot.send_message(chat_id, T.could_not_show(html.escape(str(e))))
+            await bot.send_message(chat_id, L.could_not_show(html.escape(str(e))))
 
     rows = []
     remaining = total - offset - len(page)
     if remaining > 0:
-        rows.append([_button(T.older_button(remaining), f"{REPORTS}{target_id}:{period}:{offset + REPORTS_PER_PAGE}")])
-    rows += _period_rows(target_id, period) + _back_from_reports(viewer, target_id)
-    await bot.send_message(chat_id, T.OTHER_PERIOD, reply_markup=InlineKeyboardMarkup(rows))
+        rows.append([_button(L.older_button(remaining), f"{REPORTS}{target_id}:{period}:{offset + REPORTS_PER_PAGE}")])
+    rows += _period_rows(L, target_id, period) + _back_from_reports(viewer, target_id)
+    await bot.send_message(chat_id, L.OTHER_PERIOD, reply_markup=InlineKeyboardMarkup(rows))
 
 
 # ---------- admin: status ----------
@@ -372,16 +426,17 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = await _admin_from_update(update, context)
     if not user:
         return
+    L = tr(user)
     s = db.today_stats(user.telegram_id)
     pending = db.unread_users_today(user.telegram_id)
     waiting = sum(1 for r in db.list_users() if r["user"].is_pending)
-    text = T.status(s["total"], s["reporters"], s["unread"], len(pending), waiting)
+    text = L.status(s["total"], s["reporters"], s["unread"], len(pending), waiting)
     if pending:
-        text += T.STATUS_UNREAD_TITLE + "\n" + "\n".join(
+        text += L.STATUS_UNREAD_TITLE + "\n" + "\n".join(
             f"• {html.escape(u.display_name)} — {n}" for u, n in pending[:30])
         if len(pending) > 30:
-            text += "\n" + T.status_more(len(pending) - 30)
-    rows = [[_button(T.BTN_READ, READ_NEXT)]] if pending else []
+            text += "\n" + L.status_more(len(pending) - 30)
+    rows = [[_button(L.BTN_READ, READ_NEXT)]] if pending else []
     await context.bot.send_message(update.effective_chat.id, text, parse_mode=ParseMode.HTML,
                                    reply_markup=InlineKeyboardMarkup(rows) if rows else None)
 
@@ -434,6 +489,7 @@ async def users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 
 async def _render_users(update: Update, context: ContextTypes.DEFAULT_TYPE, admin: User, pos: str) -> None:
+    L = tr(admin)
     flt, page = _parse_pos(pos)
     everyone = db.list_users()
     rows = [r for r in everyone if FILTERS[flt](r["user"])]
@@ -443,14 +499,14 @@ async def _render_users(update: Update, context: ContextTypes.DEFAULT_TYPE, admi
     first = page * USERS_PER_PAGE
     chunk = rows[first:first + USERS_PER_PAGE]
 
-    lines = [T.users_title(T.FILTERS[flt], len(rows), page + 1, pages)]
-    lines += [T.users_row(first + i + 1, _badge(r["user"]), html.escape(r["user"].display_name),
+    lines = [L.users_title(L.FILTERS[flt], len(rows), page + 1, pages)]
+    lines += [L.users_row(first + i + 1, _badge(r["user"]), html.escape(r["user"].display_name),
                           r["today_reports"], r["total_reports"])
-              for i, r in enumerate(chunk)] or [T.USERS_EMPTY]
-    lines.append(T.USERS_LEGEND)
+              for i, r in enumerate(chunk)] or [L.USERS_EMPTY]
+    lines.append(L.USERS_LEGEND)
 
     counts = {f: sum(1 for r in everyone if test(r["user"])) for f, test in FILTERS.items()}
-    kb = _pairs([_button(("• " if f == flt else "") + f"{T.FILTERS[f]} ({counts[f]})", f"{USERS_PAGE}{f}0")
+    kb = _pairs([_button(("• " if f == flt else "") + f"{L.FILTERS[f]} ({counts[f]})", f"{USERS_PAGE}{f}0")
                  for f in FILTERS])
     for i, r in enumerate(chunk):
         u = r["user"]
@@ -461,39 +517,40 @@ async def _render_users(update: Update, context: ContextTypes.DEFAULT_TYPE, admi
         ]
         action = _quick_action(admin, u)
         if action:
-            row.append(_button(ACTIONS[action][0], f"{QUICK_ACTION}{u.telegram_id}:{action}:{pos}"))
+            row.append(_button(L.ACTIONS[action][0], f"{QUICK_ACTION}{u.telegram_id}:{action}:{pos}"))
         kb.append(row)
     nav = []
     if page > 0:
-        nav.append(_button(T.PREV, f"{USERS_PAGE}{flt}{page - 1}"))
+        nav.append(_button(L.PREV, f"{USERS_PAGE}{flt}{page - 1}"))
     if page < pages - 1:
-        nav.append(_button(T.NEXT, f"{USERS_PAGE}{flt}{page + 1}"))
+        nav.append(_button(L.NEXT, f"{USERS_PAGE}{flt}{page + 1}"))
     if nav:
         kb.append(nav)
-    kb.append([_button(T.ALL_USERS_REPORTS, f"{REPORTS_MENU}0:e")])
+    kb.append([_button(L.ALL_USERS_REPORTS, f"{REPORTS_MENU}0:e")])
     await _show(update, context, "\n".join(lines), InlineKeyboardMarkup(kb))
 
 
 async def _render_user_card(update: Update, context: ContextTypes.DEFAULT_TYPE, admin: User,
                             target: User, pos: str) -> None:
+    L = tr(admin)
     today, total = db.user_report_counts(target.telegram_id)
-    role = T.ROLE_SUPER if target.is_super_admin else T.ROLE_ADMIN if target.is_admin else T.ROLE_USER
-    state = T.STATE_SUSPENDED if target.is_suspended else T.STATE_PENDING if target.is_pending else T.STATE_ACTIVE
-    text = T.user_card(
+    role = L.ROLE_SUPER if target.is_super_admin else L.ROLE_ADMIN if target.is_admin else L.ROLE_USER
+    state = L.STATE_SUSPENDED if target.is_suspended else L.STATE_PENDING if target.is_pending else L.STATE_ACTIVE
+    text = L.user_card(
         html.escape(target.display_name), target.telegram_id, role, state, today, total,
-        f"{to_local(target.created_at):%d/%m/%Y}", _when(target.last_seen_at),
+        f"{to_local(target.created_at):%d/%m/%Y}", _when(target.last_seen_at, L),
     )
     actions = _allowed_actions(admin, target)
     if target.is_super_admin:
-        text += T.CARD_SUPER
+        text += L.CARD_SUPER
     elif target.telegram_id == admin.telegram_id:
-        text += T.CARD_SELF
+        text += L.CARD_SELF
     elif not actions:
-        text += T.CARD_ADMIN_ONLY_SUPER
+        text += L.CARD_ADMIN_ONLY_SUPER
 
-    kb = _pairs([_button(ACTIONS[a][0], f"{USER_ACTION}{target.telegram_id}:{a}:{pos}") for a in actions])
-    kb.append([_button(T.CARD_REPORTS, f"{REPORTS_MENU}{target.telegram_id}:e"),
-               _button(T.CARD_BACK, f"{USERS_PAGE}{pos}")])
+    kb = _pairs([_button(L.ACTIONS[a][0], f"{USER_ACTION}{target.telegram_id}:{a}:{pos}") for a in actions])
+    kb.append([_button(L.CARD_REPORTS, f"{REPORTS_MENU}{target.telegram_id}:e"),
+               _button(L.CARD_BACK, f"{USERS_PAGE}{pos}")])
     await _show(update, context, text, InlineKeyboardMarkup(kb))
 
 
@@ -504,7 +561,7 @@ async def user_card(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     _, target_id, pos = update.callback_query.data.split(":")
     target = db.get_user(int(target_id))
     if not target:
-        await context.bot.send_message(update.effective_chat.id, T.USER_NOT_FOUND)
+        await context.bot.send_message(update.effective_chat.id, tr(admin).USER_NOT_FOUND)
         return
     await _render_user_card(update, context, admin, target, pos)
 
@@ -515,18 +572,19 @@ async def user_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     kind, target_id, action, pos = query.data.split(":")
     from_list = f"{kind}:" == QUICK_ACTION
     admin = _register(update, context)
+    L = tr(admin)
     target = db.get_user(int(target_id))
     if not admin.is_admin or admin.is_suspended:
-        await query.answer(T.ONLY_ADMINS, show_alert=True)
+        await query.answer(L.ONLY_ADMINS, show_alert=True)
         return
     if not target or action not in _allowed_actions(admin, target):
         # The list / card was out of date (someone else changed this user); show the current one.
-        await query.answer(T.NOT_ALLOWED, show_alert=True)
+        await query.answer(L.NOT_ALLOWED, show_alert=True)
     else:
         target = await apply_user_change(context.application, target.telegram_id, action)
         log.info("Admin %s: %s -> %s", admin.telegram_id, action, target.telegram_id)
-        label = ACTIONS[action][0].split(" ", 1)[-1]
-        await query.answer(T.done(target.full_name or str(target.telegram_id), label))
+        label = L.ACTIONS[action][0].split(" ", 1)[-1]
+        await query.answer(L.done(target.full_name or str(target.telegram_id), label))
     if from_list:
         await _render_users(update, context, admin, pos)
     elif target:
@@ -539,40 +597,41 @@ async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     admin = await _admin_from_update(update, context)
     if not admin:
         return
+    L = tr(admin)
     chat_id = update.effective_chat.id
     bot = context.bot
 
     pending = db.unread_users_today(admin.telegram_id)
     if not pending:
-        await bot.send_message(chat_id, T.READ_ALL_DONE)
+        await bot.send_message(chat_id, L.READ_ALL_DONE)
         return
 
     reporter, _ = pending[0]
     reports = db.unread_reports_today_for_user(admin.telegram_id, reporter.telegram_id)
     remaining_users = len(pending) - 1
 
-    await bot.send_message(chat_id, T.read_header(html.escape(reporter.display_name), len(reports)),
+    await bot.send_message(chat_id, L.read_header(html.escape(reporter.display_name), len(reports)),
                            parse_mode=ParseMode.HTML)
 
     sent_ids: list[int] = []
     for group in _group_albums(reports):
         try:
-            await _send_group(bot, chat_id, reporter, group)
+            await _send_group(bot, chat_id, reporter, group, L)
             sent_ids.extend(r.id for r in group)
         except TelegramError as e:
             log.exception("Failed to deliver reports %s", [r.id for r in group])
-            await bot.send_message(chat_id, T.could_not_show(html.escape(str(e))))
+            await bot.send_message(chat_id, L.could_not_show(html.escape(str(e))))
             sent_ids.extend(r.id for r in group)  # don't get stuck on a broken file
 
     db.mark_read(admin.telegram_id, sent_ids)
 
     if remaining_users:
         await bot.send_message(
-            chat_id, T.read_more(remaining_users), parse_mode=ParseMode.HTML,
-            reply_markup=InlineKeyboardMarkup([[_button(T.next_user_button(remaining_users), READ_NEXT)]]),
+            chat_id, L.read_more(remaining_users), parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[_button(L.next_user_button(remaining_users), READ_NEXT)]]),
         )
     else:
-        await bot.send_message(chat_id, T.READ_LAST_DONE)
+        await bot.send_message(chat_id, L.READ_LAST_DONE)
 
 
 # Report kinds that can be sent together as an album, and the InputMedia type for each.
@@ -606,20 +665,21 @@ def _group_albums(reports: list[Report]) -> list[list[Report]]:
     return groups
 
 
-async def _send_group(bot, chat_id: int, reporter: User, group: list[Report]) -> None:
+async def _send_group(bot, chat_id: int, reporter: User, group: list[Report], L) -> None:
+    """Send one report (or one album) to a chat; captions use the recipient's language L."""
     first = group[0]
     if len(group) > 1:
         media = [
             ALBUM_MEDIA[r.kind](
                 r.file_id,
-                caption=_caption(reporter, r, CAPTION_LIMIT) if (i == 0 or r.text or r.file_name) else None,
+                caption=_caption(reporter, r, CAPTION_LIMIT, L) if (i == 0 or r.text or r.file_name) else None,
                 parse_mode=ParseMode.HTML,
             )
             for i, r in enumerate(group)
         ]
         await bot.send_media_group(chat_id, media)
         return
-    caption = _caption(reporter, first, CAPTION_LIMIT)
+    caption = _caption(reporter, first, CAPTION_LIMIT, L)
     senders = {
         "photo": bot.send_photo, "video": bot.send_video, "animation": bot.send_animation,
         "document": bot.send_document, "audio": bot.send_audio, "voice": bot.send_voice,
@@ -631,7 +691,7 @@ async def _send_group(bot, chat_id: int, reporter: User, group: list[Report]) ->
         await bot.send_message(chat_id, caption, parse_mode=ParseMode.HTML)
         await bot.send_video_note(chat_id, first.file_id)
     else:
-        await bot.send_message(chat_id, _caption(reporter, first, TEXT_LIMIT), parse_mode=ParseMode.HTML)
+        await bot.send_message(chat_id, _caption(reporter, first, TEXT_LIMIT, L), parse_mode=ParseMode.HTML)
 
 
 def _report_from_message(msg) -> tuple[str, str | None, str | None, str | None] | None:
@@ -658,8 +718,9 @@ async def receive_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             return
         if msg.media_group_id:
             refused.add(msg.media_group_id)
-        reason = T.BLOCKED if user.is_suspended else T.PENDING
-        await msg.reply_text(reason + T.NOT_SAVED, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
+        L = tr(user)
+        reason = L.BLOCKED if user.is_suspended else L.PENDING
+        await msg.reply_text(reason + L.NOT_SAVED, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
         return
 
     found = _report_from_message(msg)
@@ -680,7 +741,7 @@ async def receive_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         if len(acked) > 1000:
             acked.clear()
     # The keyboard rides along so users who started the bot before it existed get it too.
-    await msg.reply_text(T.REPORT_RECEIVED, reply_markup=main_keyboard(user))
+    await msg.reply_text(tr(user).REPORT_RECEIVED, reply_markup=main_keyboard(user))
 
 
 # ---------- live delivery to admins ----------
@@ -724,14 +785,15 @@ async def _deliver_live(app: Application, reporter: User, report_ids: list[int])
     reports = db.get_reports(report_ids)
     if not reports:
         return
-    keyboard = InlineKeyboardMarkup([[
-        _button(T.ALERT_THEIR_REPORTS, f"{REPORTS_MENU}{reporter.telegram_id}"),
-        _button(T.ALERT_USER, f"{USER_CARD}{reporter.telegram_id}:a0"),
-    ]])
-    header = T.new_report_alert(html.escape(reporter.display_name), len(reports))
     for admin_id in db.active_admin_ids():
         if admin_id == reporter.telegram_id:
             continue
+        L = tr(db.get_user(admin_id))
+        keyboard = InlineKeyboardMarkup([[
+            _button(L.ALERT_THEIR_REPORTS, f"{REPORTS_MENU}{reporter.telegram_id}"),
+            _button(L.ALERT_USER, f"{USER_CARD}{reporter.telegram_id}:a0"),
+        ]])
+        header = L.new_report_alert(html.escape(reporter.display_name), len(reports))
         try:
             await _retry(lambda: app.bot.send_message(admin_id, header, parse_mode=ParseMode.HTML,
                                                       reply_markup=keyboard))
@@ -742,7 +804,7 @@ async def _deliver_live(app: Application, reporter: User, report_ids: list[int])
         delivered: list[int] = []
         for group in _group_albums(reports):
             try:
-                await _retry(lambda: _send_group(app.bot, admin_id, reporter, group))
+                await _retry(lambda: _send_group(app.bot, admin_id, reporter, group, L))
                 delivered.extend(r.id for r in group)
             except TelegramError as e:
                 log.warning("Live delivery of %s to admin %s failed: %s", [r.id for r in group], admin_id, e)
@@ -751,7 +813,8 @@ async def _deliver_live(app: Application, reporter: User, report_ids: list[int])
 
 
 async def unsupported(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    await update.message.reply_text(T.UNSUPPORTED, parse_mode=ParseMode.HTML)
+    user = _register(update, context)
+    await update.message.reply_text(tr(user).UNSUPPORTED, parse_mode=ParseMode.HTML)
 
 
 async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -771,18 +834,14 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("status", status, filters=private))
     app.add_handler(CommandHandler("users", users, filters=private))
     app.add_handler(CommandHandler("reports", all_reports, filters=private))
+    app.add_handler(CommandHandler("language", choose_language, filters=private))
 
     # Reply keyboard buttons (and their labels from earlier versions). Registered before
     # receive_report so their text isn't saved as a report.
-    for labels, handler in [
-        ([T.BTN_SEND, *T.OLD_BTN_SEND], send_report_prompt),
-        ([T.BTN_MINE, *T.OLD_BTN_MINE], my_reports),
-        ([T.BTN_READ, *T.OLD_BTN_READ], read),
-        ([T.BTN_STATUS, *T.OLD_BTN_STATUS], status),
-        ([T.BTN_USERS, *T.OLD_BTN_USERS], users),
-        ([T.BTN_ALL, *T.OLD_BTN_ALL], all_reports),
-    ]:
-        app.add_handler(MessageHandler(private & filters.Text(labels), handler))
+    for name, handler in [("BTN_SEND", send_report_prompt), ("BTN_MINE", my_reports), ("BTN_READ", read),
+                          ("BTN_STATUS", status), ("BTN_USERS", users), ("BTN_ALL", all_reports)]:
+        app.add_handler(MessageHandler(private & filters.Text(texts.labels(name)), handler))
+    app.add_handler(MessageHandler(private & filters.Text([texts.LANGUAGE_BUTTON]), choose_language))
 
     pos = r"[apcs]?\d+"  # users-list position; a bare number comes from older buttons
     app.add_handler(CallbackQueryHandler(read, pattern=f"^({READ_NEXT}|{OLD_MENU_READ})$"))
@@ -792,6 +851,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(user_action, pattern=rf"^({USER_ACTION}|{QUICK_ACTION})\d+:[a-z_]+:{pos}$"))
     app.add_handler(CallbackQueryHandler(reports_menu, pattern=rf"^({REPORTS_MENU}\d+(:e)?|rep:\d+:\d{{8}})$"))
     app.add_handler(CallbackQueryHandler(reports_page, pattern=rf"^{REPORTS}\d+:[twma]:\d+$"))
+    app.add_handler(CallbackQueryHandler(set_language, pattern=rf"^{SET_LANGUAGE}[a-z]+$"))
     app.add_handler(
         MessageHandler(
             private & (filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL

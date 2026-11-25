@@ -4,9 +4,11 @@ A Telegram bot where users send reports (text, photos, videos, voice messages an
 
 ## Features
 
-**The bot speaks Amharic.** Every message, button and command description in Telegram comes from [`texts.py`](texts.py); edit wording there. (The web admin page and this README are in English. The English names below are translations of the Amharic buttons.)
+**Amharic or English, per person.** The first time someone sends `/start`, the bot asks them to choose **🇪🇹 አማርኛ** or **🇬🇧 English**. They can switch any time with the **🌐 ቋንቋ / Language** button on their keyboard (or `/language`); their keyboard and command menu switch with them. Each message is in the language of the person receiving it, so an English-speaking admin and an Amharic-speaking user each see their own. People who used the bot before this was added are asked on their next `/start`; until then they see Amharic.
 
-Everyone gets a keyboard under the text box. Users see **📝 ሪፖርት ላክ** (Send report) and **📂 የኔ ሪፖርቶች** (My reports); admins also get **📥 ሪፖርቶችን አንብብ** (Read reports), **📊 ማጠቃለያ** (Summary), **👥 ተጠቃሚዎች** (Users) and **🗂 ሁሉም ሪፖርቶች** (All reports). The keyboard appears after `/start` (or with the reply to the next report sent). Buttons from older English keyboards keep working.
+All texts live in [`texts_am.py`](texts_am.py) and [`texts_en.py`](texts_en.py), which define the same names; edit wording there. (The web admin page is in English. The button names below are the English ones.)
+
+Everyone gets a keyboard under the text box. Users see **📝 Send report**, **📂 My reports** and **🌐 Language**; admins also get **📥 Read reports**, **📊 Summary**, **👥 Users** and **🗂 All reports**. The keyboard appears after `/start` (or with the reply to the next report sent). Buttons from older English keyboards keep working.
 
 Menus (users list, a user's details, report periods) update the same message instead of sending new ones, to keep the chat tidy.
 
@@ -123,7 +125,7 @@ Push to `main`, or run the workflow from the Actions tab. Stop any other copy of
 |---|---|
 | `main.py` | Entry point: runs the bot and the web page in one process |
 | `bot.py` | Telegram handlers (reports, `/read`, `/status`) |
-| `texts.py` | Every text the bot shows in Telegram (Amharic) |
+| `texts_am.py`, `texts_en.py`, `texts.py` | Every text the bot shows in Telegram, in Amharic and English, and the language list |
 | `web.py`, `templates/` | Web admin page |
 | `db.py` | SQLite storage (`users`, `reports`, `report_reads`) |
 | `config.py` | Settings from `.env` |

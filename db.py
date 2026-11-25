@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS users (
     is_suspended  INTEGER NOT NULL DEFAULT 0,  -- "blocked"
     is_approved   INTEGER NOT NULL DEFAULT 0,  -- new users can't send reports until an admin approves them
     created_at    TEXT NOT NULL,
-    last_seen_at  TEXT NOT NULL
+    last_seen_at  TEXT NOT NULL,
+    language      TEXT  -- 'am' or 'en'; NULL until the user picks one
 );
 
 """ + _reports_table("reports") + """
@@ -65,6 +66,7 @@ class User:
     is_approved: bool
     created_at: str
     last_seen_at: str
+    language: str | None = None
 
     @property
     def is_super_admin(self) -> bool:
@@ -145,6 +147,9 @@ class Database:
         self._migrate_report_kinds()
         if "file_name" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(reports)")}:
             self.conn.execute("ALTER TABLE reports ADD COLUMN file_name TEXT")
+            self.conn.commit()
+        if "language" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(users)")}:
+            self.conn.execute("ALTER TABLE users ADD COLUMN language TEXT")
             self.conn.commit()
 
     def _migrate_report_kinds(self) -> None:
@@ -227,6 +232,10 @@ class Database:
 
     def set_role(self, telegram_id: int, role: str) -> None:
         self.conn.execute("UPDATE users SET role = ? WHERE telegram_id = ?", (role, telegram_id))
+        self.conn.commit()
+
+    def set_language(self, telegram_id: int, language: str) -> None:
+        self.conn.execute("UPDATE users SET language = ? WHERE telegram_id = ?", (language, telegram_id))
         self.conn.commit()
 
     def set_approved(self, telegram_id: int, approved: bool) -> None:
