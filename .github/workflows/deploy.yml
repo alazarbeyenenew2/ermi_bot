@@ -16,7 +16,7 @@
 # Repository variables (same page -> Variables):
 #   SUPER_ADMIN_IDS      your Telegram user ID(s), comma separated                       (required)
 #   DEPLOY_PORT (22), DEPLOY_PATH (report-bot, relative to the user's home),
-#   ADMIN_USERNAME (admin), TIMEZONE (Africa/Addis_Ababa), LIVE_REPORTS (true), LIVE_MARKS_READ (true),
+#   ADMIN_USERNAME (admin), TIMEZONE (Africa/Addis_Ababa), LIVE_MARKS_READ (true),
 #   DOMAIN       when set, also starts Caddy (`--profile https`) and serves the admin page at https://DOMAIN
 #                (DNS must point at the server, ports 80/443 open)
 #   ADMIN_BIND (127.0.0.1), ADMIN_PORT (8000)   where the plain-HTTP admin page is published on the server
@@ -144,7 +144,6 @@ jobs:
           ADMIN_USERNAME: ${{ vars.ADMIN_USERNAME || 'admin' }}
           ADMIN_PASSWORD: ${{ secrets.ADMIN_PASSWORD }}
           SECRET_KEY: ${{ secrets.SECRET_KEY }}
-          LIVE_REPORTS: ${{ vars.LIVE_REPORTS || 'true' }}
           LIVE_MARKS_READ: ${{ vars.LIVE_MARKS_READ || 'true' }}
           TIMEZONE: ${{ vars.TIMEZONE || 'Africa/Addis_Ababa' }}
           ADMIN_BIND: ${{ vars.ADMIN_BIND || '127.0.0.1' }}
@@ -160,7 +159,7 @@ jobs:
             echo "::error::DOMAIN must be a bare hostname like admin.example.com (no https://, no path)."; exit 1
           fi
           # KEY='value' lines, read by docker compose (quotes are stripped). Empty values are skipped.
-          for name in BOT_TOKEN SUPER_ADMIN_IDS ADMIN_USERNAME ADMIN_PASSWORD SECRET_KEY LIVE_REPORTS LIVE_MARKS_READ \
+          for name in BOT_TOKEN SUPER_ADMIN_IDS ADMIN_USERNAME ADMIN_PASSWORD SECRET_KEY LIVE_MARKS_READ \
                       TIMEZONE ADMIN_BIND ADMIN_PORT DOMAIN; do
             value=${!name}
             [ -z "$value" ] && continue

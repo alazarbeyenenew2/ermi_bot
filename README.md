@@ -16,7 +16,7 @@ Everyone gets a keyboard under the text box. Users see **📝 Send report** and 
 - Suspended users get a message saying so, and their reports are not saved.
 
 **Admins** (in Telegram):
-- **Live reports**: every new report is sent to all active admins the moment it arrives, marked "🆕 New report". Albums arrive together as one album. A report delivered this way counts as read, so `/read` only shows reports you missed, for example ones that arrived while you had blocked the bot. Set `LIVE_MARKS_READ=false` to have `/read` show everything anyway, or `LIVE_REPORTS=false` to turn live delivery off.
+- **Every new report is sent to all admins** the moment it arrives (always on), as "🆕 New report from <name>" with **📂 Their reports** and **👤 User** buttons, followed by the report itself. Albums arrive together as one album. The admin who sent a report doesn't get their own. A report delivered this way counts as read, so `/read` only shows reports you missed, for example ones that arrived while you had blocked the bot; set `LIVE_MARKS_READ=false` to have `/read` show everything anyway. Admins only receive these after they've sent `/start` to the bot once (Telegram doesn't let bots message people first).
 - `/read`: shows all of **today's** unread reports from the **next user**, then marks them as read. Tap **Next user ▶** to keep going until you get *"You have read all of today's reports."* Each admin has their own read state.
 - `/status`: today's totals, which users still have unread reports, and how many users are pending.
 - **👥 List users** (or `/users`): tabs for **All**, **⏳ Pending**, **✅ Active** and **⛔ Suspended** (with counts), 10 users per page. Next to each user:
@@ -91,7 +91,6 @@ ssh-keyscan -H <server ip>               # output goes in DEPLOY_KNOWN_HOSTS
 | `SUPER_ADMIN_IDS` | (required) | your Telegram user ID(s), comma separated (get it from @userinfobot) |
 | `ADMIN_USERNAME` | `admin` | web admin page username |
 | `TIMEZONE` | `Africa/Addis_Ababa` | decides what "today" means |
-| `LIVE_REPORTS` | `true` | send each new report to admins instantly |
 | `LIVE_MARKS_READ` | `true` | reports delivered instantly count as read |
 | `DOMAIN` | (none) | when set, Caddy serves the admin page at `https://DOMAIN` (DNS must point at the server, ports 80/443 open) |
 | `ADMIN_BIND` | `127.0.0.1` | address the plain-HTTP admin page listens on (`0.0.0.0` = public, not recommended) |

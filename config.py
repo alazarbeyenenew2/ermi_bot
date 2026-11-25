@@ -22,9 +22,8 @@ ADMIN_USERNAME = os.getenv("ADMIN_USERNAME", "admin")
 ADMIN_PASSWORD = os.getenv("ADMIN_PASSWORD", "")
 SECRET_KEY = os.getenv("SECRET_KEY", "change-me")
 
-# Send every new report to all admins the moment it arrives.
-LIVE_REPORTS = os.getenv("LIVE_REPORTS", "true").lower() in ("1", "true", "yes")
-# If true, a report delivered live counts as read, so /read won't show it again.
+# Every new report is sent to all admins the moment it arrives.
+# If true, a report delivered that way counts as read, so /read won't show it again.
 LIVE_MARKS_READ = os.getenv("LIVE_MARKS_READ", "true").lower() in ("1", "true", "yes")
 
 # "Today" is computed in this timezone.

@@ -15,7 +15,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
-from telegram.error import TelegramError
+from telegram.error import RetryAfter, TelegramError
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -696,8 +696,8 @@ async def receive_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     else:
         return
 
-    if config.LIVE_REPORTS:
-        _queue_live_delivery(context, user, report_id, msg.media_group_id)
+    # Every admin is told about every new report.
+    _queue_live_delivery(context, user, report_id, msg.media_group_id)
 
     # Albums arrive as several messages; confirm only once per album.
     if msg.media_group_id:
@@ -737,22 +737,44 @@ def _queue_live_delivery(context: ContextTypes.DEFAULT_TYPE, user: User, report_
     app.create_task(flush())
 
 
+async def _retry(send):
+    """Run one Telegram send, waiting and retrying once if Telegram says we're sending too fast."""
+    try:
+        return await send()
+    except RetryAfter as e:
+        await asyncio.sleep(e.retry_after if isinstance(e.retry_after, (int, float))
+                            else e.retry_after.total_seconds())
+        return await send()
+
+
 async def _deliver_live(app: Application, reporter: User, report_ids: list[int]) -> None:
+    """Send a new report to every active admin (except the one who sent it)."""
     reports = db.get_reports(report_ids)
     if not reports:
         return
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("📂 Their reports", callback_data=f"{REPORTS_MENU}{reporter.telegram_id}"),
+        InlineKeyboardButton("👤 User", callback_data=f"{USER_CARD}{reporter.telegram_id}:a0"),
+    ]])
+    header = (f"🆕 <b>New report</b> from {html.escape(reporter.display_name)}"
+              + (f" · {len(reports)} items" if len(reports) > 1 else ""))
     for admin_id in db.active_admin_ids():
         if admin_id == reporter.telegram_id:
             continue
-        delivered: list[int] = []
         try:
-            await app.bot.send_message(admin_id, "🆕 <b>New report</b>", parse_mode=ParseMode.HTML)
-            for group in _group_albums(reports):
-                await _send_group(app.bot, admin_id, reporter, group)
-                delivered.extend(r.id for r in group)
+            await _retry(lambda: app.bot.send_message(admin_id, header, parse_mode=ParseMode.HTML,
+                                                      reply_markup=keyboard))
         except TelegramError as e:
-            # e.g. the admin blocked the bot or never pressed /start. They'll still see it via /read.
+            # e.g. the admin blocked the bot or never pressed /start. They'll still see it via Read.
             log.warning("Live delivery to admin %s failed: %s", admin_id, e)
+            continue
+        delivered: list[int] = []
+        for group in _group_albums(reports):
+            try:
+                await _retry(lambda: _send_group(app.bot, admin_id, reporter, group))
+                delivered.extend(r.id for r in group)
+            except TelegramError as e:
+                log.warning("Live delivery of %s to admin %s failed: %s", [r.id for r in group], admin_id, e)
         if config.LIVE_MARKS_READ and delivered:
             db.mark_read(admin_id, delivered)
 
