@@ -20,6 +20,11 @@ Menus (users list, a user's details, report periods) update the same message ins
 - Send a **text message**, **photo**, **video**, **GIF**, **file of any type** (PDF, Word, Excel, ZIP, …), **audio**, **voice message** or **round video**, and it's saved as a report. Albums are kept together and captions are kept. **📝 Send report** explains this. Stickers, locations and contacts aren't saved.
 - Files stay on Telegram's servers; the bot only stores their Telegram file ID, so there's no size limit beyond Telegram's own.
 - **📂 My reports** (or `/mine`): your own reports, by period. Uploaded files show their file name (📎) under the sender and time; this works for files sent after this was added.
+- **Editing a report (within 12 hours)**: a user can change a report they sent for **12 hours** after sending it, in two ways:
+  - edit the message in Telegram (long-press → Edit; works for text and for photo / file captions), or
+  - tap **✏️ Edit** on the report in **📂 My reports**, then send the new version (text, photo or file), which replaces the old one. Albums get **✏️ 1**, **✏️ 2**, … buttons for each item.
+
+  The bot confirms "Report updated", the report shows "✏️ edited", and every admin gets a "✏️ Report edited" alert with the new version. After 12 hours the ✏️ button disappears and edits are refused ("can only be edited within 12 hours"); the original stays as it was. Users can only edit their own reports, and suspended users can't edit. Reports sent before this was added can be edited with ✏️ (if they're less than 12 hours old) but not by editing the old message.
 - Suspended users get a message saying so, and their reports are not saved.
 
 **Admins** (in Telegram):

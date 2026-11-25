@@ -18,7 +18,9 @@ CREATE TABLE IF NOT EXISTS {name} (
     file_id         TEXT,
     media_group_id  TEXT,
     created_at      TEXT NOT NULL,
-    file_name       TEXT  -- original name of an uploaded document / audio / video, if Telegram gives one
+    file_name       TEXT,  -- original name of an uploaded document / audio / video, if Telegram gives one
+    message_id      INTEGER,  -- the user's Telegram message, so editing it can update the report
+    edited_at       TEXT      -- set when the user edits the report
 );
 """
 # Columns every version of the reports table has (used when copying an old table).
@@ -107,6 +109,8 @@ class Report:
     media_group_id: str | None
     created_at: str
     file_name: str | None = None
+    message_id: int | None = None
+    edited_at: str | None = None
 
 
 def _now() -> str:
@@ -151,9 +155,11 @@ class Database:
             self.conn.execute("ALTER TABLE users ADD COLUMN is_approved INTEGER NOT NULL DEFAULT 1")
         self.conn.commit()
         self._migrate_report_kinds()
-        if "file_name" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(reports)")}:
-            self.conn.execute("ALTER TABLE reports ADD COLUMN file_name TEXT")
-            self.conn.commit()
+        report_columns = {r["name"] for r in self.conn.execute("PRAGMA table_info(reports)")}
+        for column, sql_type in [("file_name", "TEXT"), ("message_id", "INTEGER"), ("edited_at", "TEXT")]:
+            if column not in report_columns:
+                self.conn.execute(f"ALTER TABLE reports ADD COLUMN {column} {sql_type}")
+        self.conn.commit()
         if "language" not in {r["name"] for r in self.conn.execute("PRAGMA table_info(users)")}:
             self.conn.execute("ALTER TABLE users ADD COLUMN language TEXT")
             self.conn.commit()
@@ -267,11 +273,12 @@ class Database:
         file_id: str | None = None,
         media_group_id: str | None = None,
         file_name: str | None = None,
+        message_id: int | None = None,
     ) -> int:
         cur = self.conn.execute(
-            """INSERT INTO reports (user_id, kind, text, file_id, media_group_id, created_at, file_name)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
-            (user_id, kind, text, file_id, media_group_id, _now(), file_name),
+            """INSERT INTO reports (user_id, kind, text, file_id, media_group_id, created_at, file_name, message_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (user_id, kind, text, file_id, media_group_id, _now(), file_name, message_id),
         )
         self.conn.commit()
         return cur.lastrowid
@@ -371,6 +378,25 @@ class Database:
             args + [limit, offset],
         ).fetchall()
         return [Report(**dict(r)) for r in rows]
+
+    # ---------- editing ----------
+    def report_for_message(self, user_id: int, message_id: int) -> Report | None:
+        row = self.conn.execute(
+            "SELECT * FROM reports WHERE user_id = ? AND message_id = ?", (user_id, message_id)
+        ).fetchone()
+        return Report(**dict(row)) if row else None
+
+    def update_report(self, report_id: int, kind: str, text: str | None, file_id: str | None,
+                      file_name: str | None, message_id: int | None = None) -> None:
+        """Replace a report's content. Admins' read marks are cleared so it shows as unread again."""
+        self.conn.execute(
+            """UPDATE reports SET kind = ?, text = ?, file_id = ?, file_name = ?, edited_at = ?,
+                      message_id = COALESCE(?, message_id)
+               WHERE id = ?""",
+            (kind, text, file_id, file_name, _now(), message_id, report_id),
+        )
+        self.conn.execute("DELETE FROM report_reads WHERE report_id = ?", (report_id,))
+        self.conn.commit()
 
     # ---------- deleting ----------
     def get_report(self, report_id: int) -> Report | None:

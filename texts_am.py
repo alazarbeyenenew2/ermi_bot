@@ -291,3 +291,26 @@ def backup_caption(when: str, users: int, reports: int, nightly: bool) -> str:
 
 
 BACKUP_TOO_BIG = "⚠️ ምትኬው ከቴሌግራም 50 MB ገደብ በላይ ስለሆነ እዚህ መላክ አይቻልም። ከሰርቨሩ ይቅዱት።"
+
+# ---------- editing reports (users, within 12 hours) ----------
+EDIT = "✏️ አስተካክል"
+
+
+def edit_item(n: int) -> str:
+    return f"✏️ {n}"
+
+
+EDIT_ALBUM_HINT = "✏️ ከላይ ካለው አልበም የሚያስተካክሉትን ይምረጡ፦"
+EDIT_PROMPT = ("✏️ <b>ሪፖርት ማስተካከያ</b>\n"
+               "አዲሱን ቅጂ አሁን ይላኩ (ጽሑፍ፣ ፎቶ ወይም ፋይል)። የቀድሞውን ይተካል።\n"
+               "<i>ሪፖርት ከተላከ በኋላ ለ12 ሰዓታት ማስተካከል ይቻላል።</i>")
+EDIT_CANCELLED = "✖️ ማስተካከያው ተትቷል። ሪፖርቱ አልተቀየረም።"
+REPORT_EDITED = "✅ ሪፖርቱ ተስተካክሏል።"
+EDIT_TOO_LATE = "⏰ ሪፖርት ማስተካከል የሚቻለው ከተላከ በ12 ሰዓት ውስጥ ብቻ ነው። ይህ ሪፖርት አልተቀየረም።"
+EDIT_GONE = "ይህ ሪፖርት ከእንግዲህ የለም።"
+EDITED_MARK = "✏️ ተስተካክሏል"
+EDIT_HELP = "\n\n✏️ <i>ሪፖርትን በ12 ሰዓት ውስጥ ለመቀየር መልእክትዎን ያስተካክሉ ወይም በ«የኔ ሪፖርቶች» ውስጥ ✏️ን ይጫኑ።</i>"
+
+
+def edited_alert(name: str) -> str:
+    return f"✏️ <b>ሪፖርት ተስተካክሏል</b>\n👤 {name}"

@@ -5,7 +5,7 @@ Every text shown in Telegram lives in texts_am.py / texts_en.py; each person see
 import asyncio
 import html
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from telegram import (
     BotCommand,
@@ -57,6 +57,8 @@ SET_LANGUAGE = "lang:"   # lang:<code>
 DELETE_REPORT = "del"    # del:<s|g>:<report_id>, delok:…, delno:…   (s = one report, g = its whole album)
 REMOVE_USER = "rmu"      # rmu:<telegram_id>:<pos> (ask), rmuok:<telegram_id>:<pos> (do it)
 BACKUP = "bk:"           # bk:now, bk:on, bk:off
+EDIT_REPORT = "edit"     # edit:<report_id> (start), editno:<report_id> (cancel)
+EDIT_WINDOW = timedelta(hours=12)  # users can edit a report this long after sending it
 
 # Users list filters: letter -> test
 FILTERS = {
@@ -148,7 +150,8 @@ def _when(iso: str, L) -> str:
 
 
 def _caption(user: User, report: Report, limit: int, L) -> str:
-    header = L.caption_header(html.escape(user.display_name), _when(report.created_at, L))
+    when = _when(report.created_at, L) + (f" · {L.EDITED_MARK}" if report.edited_at else "")
+    header = L.caption_header(html.escape(user.display_name), when)
     if report.file_name:
         header += "\n" + L.caption_file(html.escape(_truncate(report.file_name, 200)))
     raw = report.text or ""
@@ -303,7 +306,7 @@ async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 async def send_report_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = _register(update, context)
     L = tr(user)
-    text = L.BLOCKED if user.is_suspended else L.PENDING if user.is_pending else L.SEND_PROMPT
+    text = L.BLOCKED if user.is_suspended else L.PENDING if user.is_pending else L.SEND_PROMPT + L.EDIT_HELP
     await update.message.reply_text(text, parse_mode=ParseMode.HTML, reply_markup=main_keyboard(user))
 
 
@@ -414,11 +417,12 @@ async def reports_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     reporters: dict[int, User] = {}
     deletable = viewer.is_admin and not viewer.is_suspended
+    editable = target_id == viewer.telegram_id  # people edit only their own reports
     # Oldest first within the page, so albums keep their order.
     for group in _group_albums(list(reversed(page))):
         reporter = reporters.setdefault(group[0].user_id, db.get_user(group[0].user_id))
         try:
-            await _send_group(bot, chat_id, reporter, group, L, deletable)
+            await _send_group(bot, chat_id, reporter, group, L, deletable, editable)
         except TelegramError as e:
             log.warning("Could not show reports %s: %s", [r.id for r in group], e)
             await bot.send_message(chat_id, L.could_not_show(html.escape(str(e))))
@@ -852,9 +856,15 @@ def _delete_markup(L, report: Report, album_size: int = 1) -> InlineKeyboardMark
     return InlineKeyboardMarkup([[_button(L.DELETE, f"{DELETE_REPORT}:s:{report.id}")]])
 
 
-async def _send_group(bot, chat_id: int, reporter: User, group: list[Report], L, deletable: bool = False) -> None:
+def _can_edit(report: Report) -> bool:
+    """Users can edit a report for EDIT_WINDOW (12 hours) after sending it."""
+    return datetime.now(timezone.utc) - datetime.fromisoformat(report.created_at) < EDIT_WINDOW
+
+
+async def _send_group(bot, chat_id: int, reporter: User, group: list[Report], L, deletable: bool = False,
+                      editable: bool = False) -> None:
     """Send one report (or one album) to a chat; captions use the recipient's language L.
-    deletable: add a 🗑 button (for admins)."""
+    deletable: add a 🗑 button (for admins). editable: add ✏️ for reports still inside the edit window."""
     first = group[0]
     if len(group) > 1:
         media = [
@@ -866,12 +876,20 @@ async def _send_group(bot, chat_id: int, reporter: User, group: list[Report], L,
             for i, r in enumerate(group)
         ]
         await bot.send_media_group(chat_id, media)
-        if deletable:
-            # Albums can't carry buttons, so the delete button comes right after.
-            await bot.send_message(chat_id, L.ALBUM_ABOVE, reply_markup=_delete_markup(L, first, len(group)))
+        # Albums can't carry buttons, so their buttons come right after.
+        rows = list(_delete_markup(L, first, len(group)).inline_keyboard) if deletable else []
+        edits = [_button(L.edit_item(i + 1), f"{EDIT_REPORT}:{r.id}")
+                 for i, r in enumerate(group) if editable and _can_edit(r)]
+        rows += [edits[i:i + 5] for i in range(0, len(edits), 5)]
+        if rows:
+            await bot.send_message(chat_id, L.EDIT_ALBUM_HINT if edits else L.ALBUM_ABOVE,
+                                   reply_markup=InlineKeyboardMarkup(rows))
         return
     caption = _caption(reporter, first, CAPTION_LIMIT, L)
-    markup = _delete_markup(L, first) if deletable else None
+    buttons = list(_delete_markup(L, first).inline_keyboard[0]) if deletable else []
+    if editable and _can_edit(first):
+        buttons.append(_button(L.EDIT, f"{EDIT_REPORT}:{first.id}"))
+    markup = InlineKeyboardMarkup([buttons]) if buttons else None
     senders = {
         "photo": bot.send_photo, "video": bot.send_video, "animation": bot.send_animation,
         "document": bot.send_document, "audio": bot.send_audio, "voice": bot.send_voice,
@@ -921,7 +939,15 @@ async def receive_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     if not found:
         return
     kind, text, file_id, file_name = found
-    report_id = db.add_report(user.telegram_id, kind, text, file_id, msg.media_group_id, file_name)
+
+    editing = context.user_data.pop("edit_report", None)
+    if editing:
+        # The user tapped ✏️ and this message is the new version.
+        await _apply_edit(context, user, editing, found, msg.message_id, msg.reply_text)
+        return
+
+    report_id = db.add_report(user.telegram_id, kind, text, file_id, msg.media_group_id, file_name,
+                              msg.message_id)
 
     # Every admin is told about every new report.
     _queue_live_delivery(context, user, report_id, msg.media_group_id)
@@ -936,6 +962,69 @@ async def receive_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             acked.clear()
     # The keyboard rides along so users who started the bot before it existed get it too.
     await msg.reply_text(tr(user).REPORT_RECEIVED, reply_markup=main_keyboard(user))
+
+
+# ---------- editing reports (own reports, within EDIT_WINDOW) ----------
+async def _apply_edit(context: ContextTypes.DEFAULT_TYPE, user: User, report_id: int, found: tuple,
+                      message_id: int | None, reply) -> None:
+    L = tr(user)
+    report = db.get_report(report_id)
+    if not report or report.user_id != user.telegram_id:
+        await reply(L.EDIT_GONE)
+        return
+    if not _can_edit(report):
+        await reply(L.EDIT_TOO_LATE)
+        return
+    kind, text, file_id, file_name = found
+    db.update_report(report_id, kind, text, file_id, file_name, message_id)
+    log.info("User %s edited report %s", user.telegram_id, report_id)
+    await reply(L.REPORT_EDITED)
+    # Admins see the new version (and it counts as unread again).
+    context.application.create_task(_deliver_live(context.application, user, [report_id], edited=True))
+
+
+async def edit_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """edit:<id> asks for the new version; editno:<id> cancels."""
+    query = update.callback_query
+    kind, report_id = query.data.split(":")
+    report_id = int(report_id)
+    user = _register(update, context)
+    L = tr(user)
+    if kind == f"{EDIT_REPORT}no":
+        if context.user_data.get("edit_report") == report_id:
+            context.user_data.pop("edit_report")
+        await query.answer()
+        await _show(update, context, L.EDIT_CANCELLED, None)
+        return
+    report = db.get_report(report_id)
+    if not report or report.user_id != user.telegram_id:
+        await query.answer(L.EDIT_GONE, show_alert=True)
+        return
+    if not user.can_report:
+        await query.answer()
+        await context.bot.send_message(update.effective_chat.id, L.BLOCKED if user.is_suspended else L.PENDING,
+                                       parse_mode=ParseMode.HTML)
+        return
+    if not _can_edit(report):
+        await query.answer(L.EDIT_TOO_LATE, show_alert=True)
+        return
+    await query.answer()
+    context.user_data["edit_report"] = report_id
+    await context.bot.send_message(
+        update.effective_chat.id, L.EDIT_PROMPT, parse_mode=ParseMode.HTML,
+        reply_markup=InlineKeyboardMarkup([[_button(L.CANCEL, f"{EDIT_REPORT}no:{report_id}")]]),
+    )
+
+
+async def on_edited_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """The user edited a message they sent: update the matching report, within EDIT_WINDOW."""
+    msg = update.edited_message
+    user = _register(update, context)
+    report = db.report_for_message(user.telegram_id, msg.message_id)
+    found = _report_from_message(msg)
+    if not report or not found or not user.can_report:
+        return
+    await _apply_edit(context, user, report.id, found, None, msg.reply_text)
 
 
 # ---------- live delivery to admins ----------
@@ -974,7 +1063,7 @@ async def _retry(send):
         return await send()
 
 
-async def _deliver_live(app: Application, reporter: User, report_ids: list[int]) -> None:
+async def _deliver_live(app: Application, reporter: User, report_ids: list[int], edited: bool = False) -> None:
     """Send a new report to every active admin (except the one who sent it)."""
     reports = db.get_reports(report_ids)
     if not reports:
@@ -987,7 +1076,8 @@ async def _deliver_live(app: Application, reporter: User, report_ids: list[int])
             _button(L.ALERT_THEIR_REPORTS, f"{REPORTS_MENU}{reporter.telegram_id}"),
             _button(L.ALERT_USER, f"{USER_CARD}{reporter.telegram_id}:a0"),
         ]])
-        header = L.new_report_alert(html.escape(reporter.display_name), len(reports))
+        header = (L.edited_alert(html.escape(reporter.display_name)) if edited
+                  else L.new_report_alert(html.escape(reporter.display_name), len(reports)))
         try:
             await _retry(lambda: app.bot.send_message(admin_id, header, parse_mode=ParseMode.HTML,
                                                       reply_markup=keyboard))
@@ -1019,7 +1109,8 @@ def build_application() -> Application:
     if not config.BOT_TOKEN:
         raise RuntimeError("BOT_TOKEN is not set (see .env.example)")
     app = Application.builder().token(config.BOT_TOKEN).build()
-    private = filters.ChatType.PRIVATE
+    # New messages only; edits of earlier messages go to on_edited_message.
+    private = filters.ChatType.PRIVATE & filters.UpdateType.MESSAGE
 
     app.add_handler(CommandHandler("start", start, filters=private))
     app.add_handler(CommandHandler("help", start, filters=private))
@@ -1051,6 +1142,8 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(delete_report, pattern=rf"^{DELETE_REPORT}(ok|no)?:[sg]:\d+$"))
     app.add_handler(CallbackQueryHandler(remove_user, pattern=rf"^{REMOVE_USER}(ok)?:\d+:{pos}$"))
     app.add_handler(CallbackQueryHandler(backup_action, pattern=rf"^{BACKUP}(now|on|off)$"))
+    app.add_handler(CallbackQueryHandler(edit_report, pattern=rf"^{EDIT_REPORT}(no)?:\d+$"))
+    app.add_handler(MessageHandler(filters.ChatType.PRIVATE & filters.UpdateType.EDITED_MESSAGE, on_edited_message))
     app.add_handler(
         MessageHandler(
             private & (filters.PHOTO | filters.VIDEO | filters.ANIMATION | filters.Document.ALL

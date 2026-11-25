@@ -297,3 +297,26 @@ def backup_caption(when: str, users: int, reports: int, nightly: bool) -> str:
 
 
 BACKUP_TOO_BIG = "⚠️ The backup is larger than Telegram's 50 MB limit, so it can't be sent here. Copy it from the server."
+
+# ---------- editing reports (users, within 12 hours) ----------
+EDIT = "✏️ Edit"
+
+
+def edit_item(n: int) -> str:
+    return f"✏️ {n}"
+
+
+EDIT_ALBUM_HINT = "✏️ Edit an item of the album above:"
+EDIT_PROMPT = ("✏️ <b>Edit report</b>\n"
+               "Send the new version now (text, photo or file). It will replace the old one.\n"
+               "<i>Reports can be edited for 12 hours after sending.</i>")
+EDIT_CANCELLED = "✖️ Edit cancelled. The report wasn't changed."
+REPORT_EDITED = "✅ Report updated."
+EDIT_TOO_LATE = "⏰ Reports can only be edited within 12 hours of sending. This one wasn't changed."
+EDIT_GONE = "This report no longer exists."
+EDITED_MARK = "✏️ edited"
+EDIT_HELP = "\n\n✏️ <i>To change a report within 12 hours, edit your message or use ✏️ in My reports.</i>"
+
+
+def edited_alert(name: str) -> str:
+    return f"✏️ <b>Report edited</b>\n👤 {name}"
