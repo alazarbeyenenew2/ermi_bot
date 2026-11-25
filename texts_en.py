@@ -220,6 +220,7 @@ USERS_LEGEND = f"{LINE}\n<i>📨 = reports today / total · ⭐ = super admin</i
 USERS_HINT = {"a": "Tap a name to manage, 📂 for reports.", "c": "Tap a name to manage, 📂 for reports.",
               "p": "✅ accept · ⛔ suspend · or tap the name.", "s": "▶️ activate · 📂 reports · or tap the name."}
 
+USERS_HINT_REMOVE = " 🗑 removes a user."
 
 def page_label(page: int, pages: int) -> str:
     return f"{page}/{pages}"

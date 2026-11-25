@@ -213,6 +213,7 @@ USERS_LEGEND = f"{LINE}\n<i>📨 = የዛሬ / ጠቅላላ ሪፖርቶች · �
 USERS_HINT = {"a": "ለማስተዳደር ስሙን፣ ለሪፖርቶች 📂 ይጫኑ።", "c": "ለማስተዳደር ስሙን፣ ለሪፖርቶች 📂 ይጫኑ።",
               "p": "✅ ተቀበል · ⛔ አግድ · ወይም ስሙን ይጫኑ።", "s": "▶️ አንቃ · 📂 ሪፖርቶች · ወይም ስሙን ይጫኑ።"}
 
+USERS_HINT_REMOVE = " 🗑 ተጠቃሚን ያስወግዳል።"
 
 def page_label(page: int, pages: int) -> str:
     return f"{page}/{pages}"

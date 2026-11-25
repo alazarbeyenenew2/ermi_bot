@@ -55,7 +55,7 @@ REPORTS_MENU = "rpm:"    # rpm:<telegram_id>[:e]   0 = all users; ":e" = replace
 REPORTS = "rp:"          # rp:<telegram_id>:<period>:<offset>
 SET_LANGUAGE = "lang:"   # lang:<code>
 DELETE_REPORT = "del"    # del:<s|g>:<report_id>, delok:…, delno:…   (s = one report, g = its whole album)
-REMOVE_USER = "rmu"      # rmu:<telegram_id>:<pos> (ask), rmuok:<telegram_id>:<pos> (do it)
+REMOVE_USER = "rmu"      # rmu:<id>:<pos> (ask on the card), rmul:<id>:<pos> (ask from the list), rmuok:… (do it)
 BACKUP = "bk:"           # bk:now, bk:on, bk:off
 EDIT_REPORT = "edit"     # edit:<report_id> (start), editno:<report_id> (cancel)
 EDIT_WINDOW = timedelta(hours=12)  # users can edit a report this long after sending it
@@ -552,10 +552,15 @@ def _row_buttons(L, admin: User, u: User, flt: str, pos: str) -> list[InlineKeyb
         return _blank()
     reports = _button("📂", f"{REPORTS_MENU}{u.telegram_id}:e")
     if flt == "p":
-        return [act("approve", "✅"), act("block", "⛔")]
-    if flt == "s":
-        return [act("unblock", "▶️"), reports]
-    return [reports]
+        buttons = [act("approve", "✅"), act("block", "⛔")]
+    elif flt == "s":
+        buttons = [act("unblock", "▶️"), reports]
+    else:
+        buttons = [reports]
+    if admin.is_super_admin:
+        # Super admins can remove people straight from the list (blank where they can't, to keep rows aligned).
+        buttons.append(_button("🗑", f"{REMOVE_USER}l:{u.telegram_id}:{pos}") if _can_remove(admin, u) else _blank())
+    return buttons
 
 
 async def _render_users(update: Update, context: ContextTypes.DEFAULT_TYPE, admin: User, pos: str) -> None:
@@ -583,7 +588,8 @@ async def _render_users(update: Update, context: ContextTypes.DEFAULT_TYPE, admi
         lines.append(L.users_row(first + i + 1, name, r["today_reports"], r["total_reports"]))
     if not chunk:
         lines.append(L.USERS_EMPTY)
-    lines.append(L.USERS_LEGEND + "\n<i>" + L.USERS_HINT[flt] + "</i>")
+    lines.append(L.USERS_LEGEND + "\n<i>" + L.USERS_HINT[flt] + (L.USERS_HINT_REMOVE if admin.is_super_admin else "")
+                 + "</i>")
 
     # Buttons: filter tabs (2 x 2), one uniform row per user, a pager, everyone's reports.
     counts = {f: sum(1 for r in everyone if test(r["user"])) for f, test in FILTERS.items()}
@@ -645,7 +651,8 @@ def _can_remove(admin: User, target: User) -> bool:
 
 
 async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """rmu:<id>:<pos> asks for confirmation on the user card; rmuok:<id>:<pos> removes the user."""
+    """rmu:<id>:<pos> asks for confirmation on the user card, rmul:<id>:<pos> from the users list;
+    rmuok:<id>:<pos> removes the user and shows the list again."""
     query = update.callback_query
     kind, target_id, pos = query.data.split(":")
     admin = _register(update, context)
@@ -661,6 +668,15 @@ async def remove_user(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
     if kind == REMOVE_USER:
         await query.answer()
         await _render_user_card(update, context, admin, target, pos, confirm_remove=True)
+        return
+    if kind == f"{REMOVE_USER}l":
+        await query.answer()
+        _, total = db.user_report_counts(target.telegram_id)
+        text = L.remove_user_confirm(html.escape(target.display_name), total).lstrip("\n")
+        await _show(update, context, text, InlineKeyboardMarkup([
+            [_button(L.REMOVE_USER_YES, f"{REMOVE_USER}ok:{target.telegram_id}:{pos}")],
+            [_button(L.CANCEL, f"{USERS_PAGE}{pos}")],
+        ]))
         return
     deleted = db.delete_user(target.telegram_id)
     log.info("Super admin %s removed user %s (%s reports)", admin.telegram_id, target.telegram_id, deleted)
@@ -1204,7 +1220,7 @@ def build_application() -> Application:
     app.add_handler(CallbackQueryHandler(reports_page, pattern=rf"^{REPORTS}\d+:[twma]:\d+$"))
     app.add_handler(CallbackQueryHandler(set_language, pattern=rf"^{SET_LANGUAGE}[a-z]+$"))
     app.add_handler(CallbackQueryHandler(delete_report, pattern=rf"^{DELETE_REPORT}(ok|no)?:[sg]:\d+$"))
-    app.add_handler(CallbackQueryHandler(remove_user, pattern=rf"^{REMOVE_USER}(ok)?:\d+:{pos}$"))
+    app.add_handler(CallbackQueryHandler(remove_user, pattern=rf"^{REMOVE_USER}(ok|l)?:\d+:{pos}$"))
     app.add_handler(CallbackQueryHandler(backup_action, pattern=rf"^{BACKUP}(now|on|off)$"))
     app.add_handler(CallbackQueryHandler(edit_report, pattern=rf"^{EDIT_REPORT}(no)?:\d+$"))
     app.add_handler(CallbackQueryHandler(noop, pattern=f"^{NOOP}$"))
