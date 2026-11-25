@@ -40,11 +40,11 @@ Menus (users list, a user's details, report periods) update the same message ins
   - **Any admin** can accept, suspend, activate, make admins and make or remove managers.
   - Only **super admins** (`SUPER_ADMIN_IDS`) can remove an admin or suspend one. Nobody can change a super admin or themselves.
 - **🗂 All reports** (or `/reports`): everyone's reports by period, also at the bottom of the users list.
-- **🗑 Delete reports permanently**: every report an admin sees (Read, All reports, a user's reports, new-report alerts) has a **🗑 Delete** button; albums get one **Delete album** button after them. Deleting asks for confirmation, then removes the report from the database for everyone. Users don't get delete buttons.
 
-**Managers** (📋) are made by an admin or super admin from a user's details. A manager can **read reports** (📥 Read reports, 📊 Summary, 🗂 All reports, a user's reports) and **gets the new-report and edited-report alerts**, but can't manage users: no 👥 Users screen, no accepting, suspending or changing roles, no deleting reports, no new-user alerts and no backups. Managers can still send their own reports.
+**Managers** (📋) are made by an admin or super admin from a user's details. A manager can **read reports** (📥 Read reports, 📊 Summary, 🗂 All reports, a user's reports) and **gets the new-report and edited-report alerts**, but can't manage users: no 👥 Users screen, no accepting, suspending or changing roles, no new-user alerts and no backups. Managers can still send their own reports.
 
 **Super admins** also get:
+- **🗑 Delete reports permanently**: every report a super admin sees (Read, All reports, a user's reports, new-report alerts) has a **🗑 Delete** button; albums get one **Delete album** button after them. Deleting asks for confirmation, then removes the report from the database for everyone. **Only super admins can delete**: admins and managers don't get delete buttons, and an old delete button tapped by anyone else is refused.
 - **🗑 Remove user** on a user's details: after confirmation, the user and all their reports are deleted permanently. If they start the bot again they're a new, pending user. Super admins can't be removed.
 - **💾 Backup** (or `/backup`): a zipped backup is sent to **every super admin every night at 00:00 Ethiopian time** (Africa/Addis_Ababa). The backup menu shows when the next and last backups are, and has **📦 Back up now** (sent to you) and a button to turn the nightly backup off or on (remembered across restarts). The zip contains:
   - `bot.db`: a full copy of the database (to restore, stop the bot and put it back as the database file),

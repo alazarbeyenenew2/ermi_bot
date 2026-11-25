@@ -438,7 +438,7 @@ async def reports_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     await _show(update, context, title, None)
 
     reporters: dict[int, User] = {}
-    deletable = viewer.is_admin and not viewer.is_suspended
+    deletable = viewer.is_super_admin  # only super admins delete reports
     editable = target_id == viewer.telegram_id  # people edit only their own reports
     # Oldest first within the page, so albums keep their order.
     for group in _group_albums(list(reversed(page))):
@@ -705,16 +705,17 @@ async def user_action(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
         await _render_user_card(update, context, admin, target, pos)
 
 
-# ---------- admin: delete reports ----------
+# ---------- super admin: delete reports ----------
 async def delete_report(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """del:… asks to confirm, delno:… puts the 🗑 button back, delok:… deletes permanently."""
+    """del:… asks to confirm, delno:… puts the 🗑 button back, delok:… deletes permanently.
+    Only super admins can delete reports."""
     query = update.callback_query
     kind, scope, report_id = query.data.split(":")
     report_id = int(report_id)
     admin = _register(update, context)
     L = tr(admin)
-    if not admin.is_admin or admin.is_suspended:
-        await query.answer(L.ONLY_ADMINS, show_alert=True)
+    if not admin.is_super_admin:
+        await query.answer(L.ONLY_SUPER, show_alert=True)
         return
     ids = db.album_report_ids(report_id) if scope == "g" else ([report_id] if db.get_report(report_id) else [])
     if not ids:
@@ -862,7 +863,7 @@ async def read(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sent_ids: list[int] = []
     for group in _group_albums(reports):
         try:
-            await _send_group(bot, chat_id, reporter, group, L, deletable=admin.is_admin)
+            await _send_group(bot, chat_id, reporter, group, L, deletable=admin.is_super_admin)
             sent_ids.extend(r.id for r in group)
         except TelegramError as e:
             log.exception("Failed to deliver reports %s", [r.id for r in group])
@@ -925,7 +926,7 @@ def _can_edit(report: Report) -> bool:
 async def _send_group(bot, chat_id: int, reporter: User, group: list[Report], L, deletable: bool = False,
                       editable: bool = False) -> None:
     """Send one report (or one album) to a chat; captions use the recipient's language L.
-    deletable: add a 🗑 button (for admins). editable: add ✏️ for reports still inside the edit window."""
+    deletable: add a 🗑 button (super admins only). editable: add ✏️ for reports still inside the edit window."""
     first = group[0]
     if len(group) > 1:
         media = [
@@ -1151,7 +1152,7 @@ async def _deliver_live(app: Application, reporter: User, report_ids: list[int],
         for group in _group_albums(reports):
             try:
                 await _retry(lambda: _send_group(app.bot, admin_id, reporter, group, L,
-                                                 deletable=recipient.is_admin))
+                                                 deletable=recipient.is_super_admin))
                 delivered.extend(r.id for r in group)
             except TelegramError as e:
                 log.warning("Live delivery of %s to admin %s failed: %s", [r.id for r in group], admin_id, e)
