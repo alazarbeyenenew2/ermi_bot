@@ -524,6 +524,7 @@ def _allowed_actions(admin: User, target: User) -> list[str]:
 
 
 NOOP = "noop"  # an empty button that keeps rows lined up
+PAD = "⠀"  # Braille blank: invisible, and Telegram doesn't trim it like spaces
 
 
 def _blank() -> InlineKeyboardButton:
@@ -595,10 +596,14 @@ async def _render_users(update: Update, context: ContextTypes.DEFAULT_TYPE, admi
     counts = {f: sum(1 for r in everyone if test(r["user"])) for f, test in FILTERS.items()}
     kb = _pairs([_button(("• " if f == flt else "") + f"{L.FILTERS[f]} {counts[f]}", f"{USERS_PAGE}{f}0")
                  for f in FILTERS])
-    for i, r in enumerate(chunk):
+    # Telegram centers button text, so pad every name to the same length with an invisible
+    # character (not stripped like spaces) to line the names up on the left.
+    labels = [f"{first + i + 1}. {_badge(r['user'])} {_truncate(r['user'].full_name or str(r['user'].telegram_id), 18)}"
+              for i, r in enumerate(chunk)]
+    width = max((len(label) for label in labels), default=0)
+    for label, r in zip(labels, chunk):
         u = r["user"]
-        name = _button(f"{first + i + 1}. {_badge(u)} {_truncate(u.full_name or str(u.telegram_id), 18)}",
-                       f"{USER_CARD}{u.telegram_id}:{pos}")
+        name = _button(label + PAD * (width - len(label)), f"{USER_CARD}{u.telegram_id}:{pos}")
         kb.append([name] + _row_buttons(L, admin, u, flt, pos))
     if pages > 1:
         kb.append([
